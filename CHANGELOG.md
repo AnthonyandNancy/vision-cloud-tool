@@ -1,6 +1,6 @@
 # Changelog
 
-All notable user-facing changes to DSH Vision Toolkit are documented in this file. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic version tags.
+All notable user-facing changes to DSH Vision Cloud are documented in this file. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic version tags.
 
 ## [0.1.7] - 2026-08-15
 
@@ -41,7 +41,7 @@ All notable user-facing changes to DSH Vision Toolkit are documented in this fil
 ### Fixed
 
 - Accept low-share `vision_dominant_colors` palette and candidate rows whose histogram bar is empty.
-- Use Harness design tokens for every Vision Toolkit surface color, including preview checkerboards, download actions, status indicators, alerts, fields, and pasted-image chips, so light and dark themes remain readable without light-only fallback colors.
+- Use Harness design tokens for every Vision Cloud surface color, including preview checkerboards, download actions, status indicators, alerts, fields, and pasted-image chips, so light and dark themes remain readable without light-only fallback colors.
 - Require the compatible DSH `0.1.0-rc.6` release line so package managers cannot select the broken `dsh-client-runtime@0.0.1-rc.1` release through the `latest` dist-tag.
 - Use the published `@deepseek-ai/dsh-client-ui-input-trigger` package while retaining runtime registration compatibility with the earlier `ctx.slash` service alias.
 - Publish only rescoped `@deepseek-ai/cordis` imports and declare every directly consumed DSH host/client peer.
@@ -51,13 +51,13 @@ All notable user-facing changes to DSH Vision Toolkit are documented in this fil
 
 ### Changed
 
-- Package metadata (`repository`, `bugs`) points at the public `Anionex/dsh-vision-toolkit` repository; the portable verification gate tracks the current version.
+- Package metadata (`repository`, `bugs`) points at the public `Anionex/dsh-vision-cloud` repository; the portable verification gate tracks the current version.
 
 ## [0.1.3] - 2026-08-14
 
 ### Added
 
-- Web pasted-image degradation (`degradePastedImages`, default off): when the session model cannot accept images, pasted images are saved into the session workspace (`.dsh-vision-toolkit/pastes/`) and handed to the model as file paths, so the agent reads them through the visual tools with a visible tool workflow. Native vision models are preferred and never take this path.
+- Web pasted-image degradation (`degradePastedImages`, default off): when the session model cannot accept images, pasted images are saved into the session workspace (`.dsh-vision-cloud/pastes/`) and handed to the model as file paths, so the agent reads them through the visual tools with a visible tool workflow. Native vision models are preferred and never take this path.
 
 ### Fixed
 
@@ -68,10 +68,10 @@ All notable user-facing changes to DSH Vision Toolkit are documented in this fil
 
 ### Changed
 
-- Repositioned the README, landing page, hero, social preview, package metadata, and About copy around the product's exact role as the native DeepSeek Harness integration for `agent-vision-toolkit`.
+- Repositioned the README, landing page, hero, social preview, package metadata, and About copy around the product's exact role as the native DeepSeek Harness integration for `agent-vision-cloud`.
 - Added direct, prominent links to the upstream repository and first-party project website.
 - Added optimized official upstream reference images for infographic restoration, sketch-to-UI restoration, image Q&A, and screenshot-guided debugging, with exact commit provenance and explicit separation from DSH-native proof.
-- Set the package homepage to the first-party `agent-vision-toolkit` website and expanded discovery keywords for text-only agents, Agent Skills, and vision-language models.
+- Set the package homepage to the first-party `agent-vision-cloud` website and expanded discovery keywords for text-only agents, Agent Skills, and vision-language models.
 
 ## [0.1.1] - 2026-08-11
 
@@ -92,7 +92,7 @@ All notable user-facing changes to DSH Vision Toolkit are documented in this fil
 - Five P0 tools: `vision_glance`, `vision_ground`, `vision_detect`, `vision_trace`, and `vision_crop`.
 - Five P1 tools: `vision_pixel_diff`, `vision_long_screenshot_ocr`, `vision_extract_foreground`, `vision_dominant_colors`, and `vision_html_screenshot`.
 - Agent-scoped progressive tool exposure through the bundled `vision-tools` Skill and one temporary activation bootstrap.
-- Managed and exact external Python runtime modes backed by a pinned, manifest-verified `agent-vision-toolkit` snapshot.
+- Managed and exact external Python runtime modes backed by a pinned, manifest-verified `agent-vision-cloud` snapshot.
 - DSH Credentials integration, hard operation deadlines, cancellation propagation, per-session concurrency, bounded single-task glance reuse, metrics, and stable redacted errors.
 - Workspace-fenced Artifact creation for images, SVG, Markdown, and JSON, including signed Web preview/download routes and local open-file fallback.
 - Dedicated Web tool cards plus live Settings for configuration, health, connection testing, runtime preparation, and version inspection.
@@ -108,12 +108,12 @@ All notable user-facing changes to DSH Vision Toolkit are documented in this fil
 - Runtime teardown cancels in-flight operations before removing Agent-scoped tools, the activation bootstrap, and the Skill.
 - The Web client is published through the current nested `dsh.client` manifest and loader-compatible built artifact required by DSH snapshot0810.
 
-[Unreleased]: https://github.com/Anionex/dsh-vision-toolkit/compare/v0.1.7...HEAD
-[0.1.7]: https://github.com/Anionex/dsh-vision-toolkit/compare/v0.1.6...v0.1.7
-[0.1.6]: https://github.com/Anionex/dsh-vision-toolkit/compare/v0.1.5...v0.1.6
-[0.1.5]: https://github.com/Anionex/dsh-vision-toolkit/compare/v0.1.4...v0.1.5
-[0.1.4]: https://github.com/Anionex/dsh-vision-toolkit/compare/v0.1.3...v0.1.4
-[0.1.3]: https://github.com/Anionex/dsh-vision-toolkit/compare/v0.1.2...v0.1.3
-[0.1.2]: https://github.com/Anionex/dsh-vision-toolkit/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/Anionex/dsh-vision-toolkit/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/Anionex/dsh-vision-toolkit/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Anionex/dsh-vision-cloud/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/Anionex/dsh-vision-cloud/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/Anionex/dsh-vision-cloud/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/Anionex/dsh-vision-cloud/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/Anionex/dsh-vision-cloud/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/Anionex/dsh-vision-cloud/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/Anionex/dsh-vision-cloud/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/Anionex/dsh-vision-cloud/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/Anionex/dsh-vision-cloud/releases/tag/v0.1.0

@@ -4,7 +4,7 @@
  * image attachment; enforces byte/pixel limits through a pure-JS header parser;
  * stores/reads images via the DSH attachment service; and reads them with the
  * DSH app's configured model through `ctx.llm.stream`.
- * @module dsh-vision-toolkit/runtime
+ * @module dsh-vision-cloud/runtime
  */
 
 import { readFile } from 'node:fs/promises'
@@ -145,7 +145,7 @@ export class Semaphore {
   }
 
   async acquire(signal: AbortSignal): Promise<void> {
-    if (signal.aborted) throw new VisionToolkitError('cancelled', 'vision-toolkit: cancelled before execution')
+    if (signal.aborted) throw new VisionToolkitError('cancelled', 'vision-cloud: cancelled before execution')
     if (this.waiters.length === 0 && this.active < this.limit) {
       this.active += 1
       return
@@ -160,7 +160,7 @@ export class Semaphore {
       entry.onAbort = (): void => {
         const index = this.waiters.indexOf(entry)
         if (index >= 0) this.waiters.splice(index, 1)
-        reject(new VisionToolkitError('cancelled', 'vision-toolkit: cancelled while waiting for a concurrency slot'))
+        reject(new VisionToolkitError('cancelled', 'vision-cloud: cancelled while waiting for a concurrency slot'))
       }
       this.waiters.push(entry)
       signal.addEventListener('abort', entry.onAbort, { once: true })
@@ -414,7 +414,7 @@ export class VisionToolkitRuntime {
       throw new VisionToolkitError('config', 'vision_cloud_tool is not enabled; select a vision model in Settings')
     }
     const messages = [createUserMessage({
-      source: { kind: 'plugin', plugin: '@anionex/dsh-vision-toolkit' },
+      source: { kind: 'plugin', plugin: 'dsh-vision-cloud' },
       content: [
         ...content,
         { type: 'text', text: buildVisionPrompt({
@@ -461,7 +461,7 @@ export class VisionToolkitRuntime {
       const sources = [...pathSources, ...attachmentSources]
       const { images: resolved, result } = await this.readBytes(sources, prompt, signal, warnings)
       this.ctx.logger.info(
-        'dsh-vision-toolkit tool=%s outcome=ok totalMs=%d images=%d model=%s',
+        'dsh-vision-cloud tool=%s outcome=ok totalMs=%d images=%d model=%s',
         'vision_cloud_tool',
         Date.now() - started,
         resolved.length,

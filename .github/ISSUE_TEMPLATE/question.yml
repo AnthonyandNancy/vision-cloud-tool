@@ -11,7 +11,7 @@ body:
     id: versions
     attributes:
       label: DSH snapshot, plugin version, and profile
-      placeholder: snapshot0810, dsh-vision-toolkit v0.1.0, headless
+      placeholder: snapshot0810, dsh-vision-cloud v0.1.0, headless
     validations:
       required: true
   - type: input

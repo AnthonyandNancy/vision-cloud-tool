@@ -177,7 +177,7 @@ beforeEach(() => {
     if (init?.method === 'POST') {
       return new Response(JSON.stringify({
         ok: true,
-        value: { absolutePath: '/workspace/.dsh-vision-toolkit/tmp/pasted-images/a/default.png' },
+        value: { absolutePath: '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/default.png' },
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     }
     return new Response(JSON.stringify({ takeover: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
@@ -197,7 +197,7 @@ describe('clipboard image client', () => {
 
   it('registers the reference codec through the legacy inputTriggers service', () => {
     const bench = fakeClient('', ['inputTriggers'])
-    expect(bench.source()?.name).toBe('vision-toolkit-pasted-image')
+    expect(bench.source()?.name).toBe('vision-cloud-pasted-image')
     expect(bench.ctx.inject).toHaveBeenCalledWith(['slash'], expect.any(Function))
     expect(bench.ctx.inject).toHaveBeenCalledWith(['inputTriggers'], expect.any(Function))
     bench.dispose()
@@ -215,7 +215,7 @@ describe('clipboard image client', () => {
     expect(bench.triggerRegistries.slash.registerSource).toHaveBeenCalledTimes(1)
     expect(bench.triggerRegistries.inputTriggers.registerSource).not.toHaveBeenCalled()
     bench.disposeEffect(0)
-    expect(bench.source()?.name).toBe('vision-toolkit-pasted-image')
+    expect(bench.source()?.name).toBe('vision-cloud-pasted-image')
     expect(bench.triggerRegistries.slash.dispose).not.toHaveBeenCalled()
     bench.disposeEffect(1)
     expect(bench.source()).toBeUndefined()
@@ -294,8 +294,8 @@ describe('clipboard image client', () => {
       return new Response(JSON.stringify({
         ok: true,
         value: { absolutePath: index === 0
-          ? '/workspace/.dsh-vision-toolkit/tmp/pasted-images/a/image-01.png'
-          : '/workspace/.dsh-vision-toolkit/tmp/pasted-images/a/image-02.webp' },
+          ? '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-01.png'
+          : '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-02.webp' },
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     })
     vi.stubGlobal('fetch', request)
@@ -319,10 +319,10 @@ describe('clipboard image client', () => {
     const refs = bench.input.state.getSnapshot().occurrences.map(row => row.ref)
     const serialized = await Promise.all(refs.map(ref => codec.serialize(ref, new AbortController().signal)))
     expect(request).toHaveBeenCalledTimes(2)
-    expect(request.mock.calls.every(([url]) => String(url).startsWith('/_dsh/vision-toolkit/paste-images?'))).toBe(true)
+    expect(request.mock.calls.every(([url]) => String(url).startsWith('/_dsh/vision-cloud/paste-images?'))).toBe(true)
     expect(serialized).toEqual([
-      '[Pasted image available at absolute path: "/workspace/.dsh-vision-toolkit/tmp/pasted-images/a/image-01.png"]',
-      '[Pasted image available at absolute path: "/workspace/.dsh-vision-toolkit/tmp/pasted-images/a/image-02.webp"]',
+      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-01.png"]',
+      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-02.webp"]',
     ])
     bench.dispose()
   })
@@ -370,7 +370,7 @@ describe('clipboard image client', () => {
       file('two.png', 'image/png', [2]),
       file('three.png', 'image/png', [3]),
     ]))
-    const dock = bench.registrations.find(row => row.options.id === 'vision-toolkit-pasted-images')
+    const dock = bench.registrations.find(row => row.options.id === 'vision-cloud-pasted-images')
     if (dock === undefined) throw new Error('paste dock was not registered')
     const injected = (dock.options.inject as ((sessionId: string) => {
       controller: PasteImageController
@@ -413,7 +413,7 @@ describe('clipboard image client', () => {
     const textarea = composer()
     await armTakeover()
     textarea.dispatchEvent(clipboardEvent('', [file('one.png', 'image/png', [1])]))
-    const dock = bench.registrations.find(row => row.options.id === 'vision-toolkit-pasted-images')
+    const dock = bench.registrations.find(row => row.options.id === 'vision-cloud-pasted-images')
     if (dock === undefined) throw new Error('paste dock was not registered')
     const injected = (dock.options.inject as ((sessionId: string) => {
       controller: PasteImageController
@@ -440,7 +440,7 @@ describe('clipboard image client', () => {
       if (name === 'one.png') {
         return new Response(JSON.stringify({
           ok: true,
-          value: { absolutePath: '/workspace/.dsh-vision-toolkit/tmp/pasted-images/a/stable-one.png' },
+          value: { absolutePath: '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/stable-one.png' },
         }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
       secondAttempts += 1
@@ -452,7 +452,7 @@ describe('clipboard image client', () => {
       }
       return new Response(JSON.stringify({
         ok: true,
-        value: { absolutePath: '/workspace/.dsh-vision-toolkit/tmp/pasted-images/a/retried-two.png' },
+        value: { absolutePath: '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/retried-two.png' },
       }), { status: 200, headers: { 'Content-Type': 'application/json' } })
     })
     vi.stubGlobal('fetch', request)
@@ -474,11 +474,11 @@ describe('clipboard image client', () => {
     expect(request).toHaveBeenCalledTimes(3)
     const names = request.mock.calls.map(([url]) => new URL(String(url), 'http://localhost').searchParams.get('name'))
     expect(names).toEqual(['one.png', 'two.png', 'two.png'])
-    expect(secondText).toBe('[Pasted image available at absolute path: "/workspace/.dsh-vision-toolkit/tmp/pasted-images/a/retried-two.png"]')
+    expect(secondText).toBe('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/retried-two.png"]')
 
     const firstText = await codec.serialize(first.ref, new AbortController().signal)
     expect(request).toHaveBeenCalledTimes(3)
-    expect(firstText).toBe('[Pasted image available at absolute path: "/workspace/.dsh-vision-toolkit/tmp/pasted-images/a/stable-one.png"]')
+    expect(firstText).toBe('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/stable-one.png"]')
     bench.dispose()
   })
 
@@ -500,7 +500,7 @@ describe('clipboard image client', () => {
 
     await expect(send()).rejects.toThrow('workspace copy failed')
     expect(modelSink).not.toHaveBeenCalled()
-    const dock = bench.registrations.find(row => row.options.id === 'vision-toolkit-pasted-images')
+    const dock = bench.registrations.find(row => row.options.id === 'vision-cloud-pasted-images')
     expect(dock).toBeDefined()
 
     const injected = (dock?.options.inject as ((sessionId: string) => { controller: PasteImageController; remove: (row: Occurrence) => void }))('session-1')

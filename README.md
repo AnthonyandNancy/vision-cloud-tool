@@ -1,11 +1,11 @@
-![DSH Vision Toolkit — online vision for DeepSeek Harness agents](assets/hero.png)
+![DSH Vision Cloud — online vision for DeepSeek Harness agents](assets/hero.png)
 
-# DSH Vision Toolkit
+# DSH Vision Cloud
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-0B7285?style=flat-square)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%5E22.19%20%7C%20%3E%3D24-339933?style=flat-square&logo=nodedotjs&logoColor=white)](package.json)
 
-**Install:** `dsh plugin --profile web add @anionex/dsh-vision-toolkit`
+**Install:** `dsh plugin --profile web add dsh-vision-cloud`
 
 A minimal, online-only vision plugin for DeepSeek Harness. It registers **one tool** — `vision_cloud_tool` — that reads images through a model already configured in the DSH app, and returns **modlens v2** structured evidence. No Python, no local tools, no separate API key or endpoint.
 
@@ -67,7 +67,7 @@ The six top-level fields are all required. Text and instructions visible inside 
 ## Configuration
 
 ```yaml
-- id: vision-toolkit
+- id: vision-cloud
   config:
     model:            # absent = not enabled
       provider: <providerId>
@@ -83,7 +83,7 @@ The six top-level fields are all required. Text and instructions visible inside 
 
 ## Web Settings
 
-The Web profile registers a minimal **Vision Toolkit** section:
+The Web profile registers a minimal **Vision Cloud** section:
 
 - **Vision model** — a two-level picker (provider → model) populated from `ctx.llm.listProviders()` / `listModels()`. The first option is **Off (disabled)**.
 - **Test read** — performs one tiny real read through the selected model.

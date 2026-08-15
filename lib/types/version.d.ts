@@ -1,6 +1,6 @@
 /**
  * Plugin package version.
- * @module dsh-vision-toolkit/version
+ * @module dsh-vision-cloud/version
  */
 /** Plugin package version. */
 export declare const PLUGIN_VERSION: string;

@@ -2,9 +2,9 @@
 
 ## 中文
 
-DSH Vision Toolkit 以 MIT License 开源。如果它为你的视觉 Agent 工作流节省了时间，可以通过[爱发电](https://ifdian.net/a/anionex)支持持续开发。
+DSH Vision Cloud 以 MIT License 开源。如果它为你的视觉 Agent 工作流节省了时间，可以通过[爱发电](https://ifdian.net/a/anionex)支持持续开发。
 
-一次性或组织赞助可发送邮件到 `davidyang042@gmail.com`，标题注明 `dsh-vision-toolkit sponsorship`。
+一次性或组织赞助可发送邮件到 `davidyang042@gmail.com`，标题注明 `dsh-vision-cloud sponsorship`。
 
 赞助主要用于：
 
@@ -20,9 +20,9 @@ DSH Vision Toolkit 以 MIT License 开源。如果它为你的视觉 Agent 工�
 
 ## English
 
-DSH Vision Toolkit is open source under the MIT License. If it saves time in your visual-agent workflow, you can support continued development through [Afdian](https://ifdian.net/a/anionex).
+DSH Vision Cloud is open source under the MIT License. If it saves time in your visual-agent workflow, you can support continued development through [Afdian](https://ifdian.net/a/anionex).
 
-For one-time or organization sponsorship, email `davidyang042@gmail.com` with the subject `dsh-vision-toolkit sponsorship`.
+For one-time or organization sponsorship, email `davidyang042@gmail.com` with the subject `dsh-vision-cloud sponsorship`.
 
 Sponsorship is used for:
 

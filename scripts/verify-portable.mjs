@@ -26,7 +26,7 @@ async function filesBelow(directory) {
   const entries = await readdir(directory, { withFileTypes: true })
   const files = []
   for (const entry of entries) {
-    if (entry.isDirectory() && ['.git', '.dsh-vision-toolkit', 'node_modules'].includes(entry.name)) continue
+    if (entry.isDirectory() && ['.git', '.dsh-vision-cloud', 'node_modules'].includes(entry.name)) continue
     const path = join(directory, entry.name)
     if (entry.isDirectory()) files.push(...await filesBelow(path))
     else if (entry.isFile()) files.push(path)
@@ -64,10 +64,10 @@ const pkg = JSON.parse(await readFile(packagePath, 'utf8'))
 const changelog = await readFile(join(root, 'CHANGELOG.md'), 'utf8')
 const latestRelease = changelog.match(/^## \[(\d+\.\d+\.\d+)\]/mu)?.[1]
 
-check(pkg.name === '@anionex/dsh-vision-toolkit', 'package name must stay @anionex/dsh-vision-toolkit')
+check(pkg.name === 'dsh-vision-cloud', 'package name must stay dsh-vision-cloud')
 check(pkg.version === latestRelease, 'package version and the latest release notes must stay aligned')
-check(pkg.repository?.url === 'git+https://github.com/Anionex/dsh-vision-toolkit.git', 'repository URL is missing or mismatched')
-check(pkg.bugs?.url === 'https://github.com/Anionex/dsh-vision-toolkit/issues', 'issue tracker URL is missing or mismatched')
+check(pkg.repository?.url === 'git+https://github.com/Anionex/dsh-vision-cloud.git', 'repository URL is missing or mismatched')
+check(pkg.bugs?.url === 'https://github.com/Anionex/dsh-vision-cloud/issues', 'issue tracker URL is missing or mismatched')
 check(pkg.homepage === 'https://agent-vision.anionex.me', 'homepage URL is missing or mismatched')
 check(pkg.funding === 'https://ifdian.net/a/anionex', 'funding metadata is missing or mismatched')
 check(pkg.engines?.node === '^22.19.0 || >=24.0.0', 'Node.js engine range must match DeepSeek Harness')

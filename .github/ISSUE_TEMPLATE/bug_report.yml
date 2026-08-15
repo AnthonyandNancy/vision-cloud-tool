@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for helping improve DSH Vision Toolkit. Remove API keys, authorization headers, complete prompts or conversations, private image content, and unrelated workspace paths before submitting.
+        Thanks for helping improve DSH Vision Cloud. Remove API keys, authorization headers, complete prompts or conversations, private image content, and unrelated workspace paths before submitting.
   - type: dropdown
     id: component
     attributes:
@@ -28,7 +28,7 @@ body:
     id: versions
     attributes:
       label: DSH snapshot, plugin version, and profile
-      placeholder: snapshot0810, dsh-vision-toolkit v0.1.0, web
+      placeholder: snapshot0810, dsh-vision-cloud v0.1.0, web
     validations:
       required: true
   - type: input

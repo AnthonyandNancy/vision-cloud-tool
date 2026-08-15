@@ -133,7 +133,7 @@ function requestToolNames(request: ScriptedLlmRequest | undefined): string[] {
 
 function fixturePatch(home: string, withModel: boolean): string {
   const path = join(home, 'fixture-patch.yml')
-  const lines = ['- id: vision-toolkit']
+  const lines = ['- id: vision-cloud']
   if (withModel) {
     lines.push(
       '  config:',
@@ -153,7 +153,7 @@ if (process.env.DSH_VISION_REQUIRE_PROFILE_E2E === '1' && !profileE2eAvailable) 
   throw new Error(`DSH_VISION_REQUIRE_PROFILE_E2E=1 requires dsh ${REQUIRED_DSH_VERSION} and pnpm on PATH`)
 }
 
-describe.skipIf(!profileE2eAvailable)('dsh-vision-toolkit profile install (keyless e2e)', () => {
+describe.skipIf(!profileE2eAvailable)('dsh-vision-cloud profile install (keyless e2e)', () => {
   const homes: string[] = []
 
   afterEach(() => {
@@ -172,8 +172,8 @@ describe.skipIf(!profileE2eAvailable)('dsh-vision-toolkit profile install (keyle
       expect(add.code, add.stderr).toBe(0)
 
       const dump = await runDsh(['--profile', 'headless', '--dump-config'], { DSH_HOME: home })
-      expect(dump.stdout).toContain('- id: vision-toolkit')
-      expect(dump.stdout).toContain("name: '@anionex/dsh-vision-toolkit'")
+      expect(dump.stdout).toContain('- id: vision-cloud')
+      expect(dump.stdout).toContain("name: 'dsh-vision-cloud'")
 
       // With a model selected, the tool must be present in the model request.
       const enabledPatch = fixturePatch(home, true)
@@ -215,12 +215,12 @@ describe.skipIf(!profileE2eAvailable)('dsh-vision-toolkit profile install (keyle
         await disabledServer.close()
       }
 
-      const remove = await runDsh(['plugin', '--profile', 'headless', 'remove', '@anionex/dsh-vision-toolkit'], {
+      const remove = await runDsh(['plugin', '--profile', 'headless', 'remove', 'dsh-vision-cloud'], {
         DSH_HOME: home,
       })
       expect(remove.code, remove.stderr).toBe(0)
       const dumpAfter = await runDsh(['--profile', 'headless', '--dump-config'], { DSH_HOME: home })
-      expect(dumpAfter.stdout).not.toContain('vision-toolkit')
+      expect(dumpAfter.stdout).not.toContain('vision-cloud')
     } finally {
       // Best-effort cleanup of the headless profile created by `dsh plugin`.
       void home

@@ -1,11 +1,11 @@
-![DSH Vision Toolkit——面向 DeepSeek Harness Agent 的在线视觉能力](assets/hero.png)
+![DSH Vision Cloud——面向 DeepSeek Harness Agent 的在线视觉能力](assets/hero.png)
 
-# DSH Vision Toolkit
+# DSH Vision Cloud
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-0B7285?style=flat-square)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%5E22.19%20%7C%20%3E%3D24-339933?style=flat-square&logo=nodedotjs&logoColor=white)](package.json)
 
-**安装：** `dsh plugin --profile web add @anionex/dsh-vision-toolkit`
+**安装：** `dsh plugin --profile web add dsh-vision-cloud`
 
 一个极简、纯在线的 DeepSeek Harness 视觉插件。它只注册**一个工具** `vision_cloud_tool`：通过 DSH 应用内已配置的模型读取图片，并返回 **modlens v2** 结构化结果。零 Python、零本地工具、零独立 API Key 和地址。
 
@@ -67,7 +67,7 @@ vision_cloud_tool
 ## 配置
 
 ```yaml
-- id: vision-toolkit
+- id: vision-cloud
   config:
     model:            # 缺省 = 不开启
       provider: <providerId>
@@ -83,7 +83,7 @@ vision_cloud_tool
 
 ## Web 设置
 
-Web 配置页会注册一个精简的「视觉工具箱」小节：
+Web 配置页会注册一个精简的「视觉云」小节：
 
 - **视觉模型**——两级选择（服务商 → 模型），数据来自 `ctx.llm.listProviders()` / `listModels()`，第一项为「不开启（默认）」。
 - **测试读取**——用所选模型做一次极小的真实读取。

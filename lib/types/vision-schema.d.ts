@@ -2,7 +2,7 @@
  * modlens v2 vision result contract. Six required top-level fields; no pixel
  * bbox and no numeric confidence (vision models fabricate both, so v2 dropped
  * them). Ported from liustack/modlens (MIT).
- * @module dsh-vision-toolkit/vision-schema
+ * @module dsh-vision-cloud/vision-schema
  */
 export interface VisionOcrLine {
     text: string;

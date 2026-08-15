@@ -93,7 +93,7 @@ describe('pasted image Web backend', () => {
   it('rejects a symlinked plugin temp root that resolves outside the workspace', async () => {
     const cwd = await workspace()
     const outside = await workspace()
-    await symlink(outside, join(cwd, '.dsh-vision-toolkit'))
+    await symlink(outside, join(cwd, '.dsh-vision-cloud'))
     const { upload } = await setup(cwd)
     const response = await upload('safe.png', 'image/png', Uint8Array.of(1))
     const body = await response.json() as { error: { message: string } }

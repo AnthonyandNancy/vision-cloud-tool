@@ -67,7 +67,7 @@ jobs:
         run: npm run verify:portable
 
       - name: Exercise vendored provider transports
-        run: PYTHONDONTWRITEBYTECODE=1 python vendor/agent-vision-toolkit/tests/test_vision_client.py
+        run: PYTHONDONTWRITEBYTECODE=1 python vendor/agent-vision-cloud/tests/test_vision_client.py
 
       - name: Parse vendored Python sources without writing bytecode
         run: |
@@ -75,7 +75,7 @@ jobs:
           import ast
           from pathlib import Path
 
-          root = Path("vendor/agent-vision-toolkit")
+          root = Path("vendor/agent-vision-cloud")
           files = sorted(root.rglob("*.py"))
           if not files:
               raise SystemExit("no vendored Python sources found")

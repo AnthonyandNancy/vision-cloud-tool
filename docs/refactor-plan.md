@@ -4,7 +4,7 @@ Status: approved — executing on branch `feat/vision-cloud-tool`.
 
 ## Goal
 
-Turn `dsh-vision-toolkit` into a beginner-friendly, online-only, zero-Python
+Turn `dsh-vision-cloud` into a beginner-friendly, online-only, zero-Python
 vision plugin:
 
 - **One tool** `vision_cloud_tool`.
@@ -60,7 +60,7 @@ vision plugin:
 ## Config
 
 ```yaml
-- id: vision-toolkit
+- id: vision-cloud
   config:
     model:            # absent = not enabled
       provider: <providerId>

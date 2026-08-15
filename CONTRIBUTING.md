@@ -1,4 +1,4 @@
-# Contributing to DSH Vision Toolkit
+# Contributing to DSH Vision Cloud
 
 Focused fixes, tests, DSH integration improvements, and documentation changes are welcome. By participating, you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
@@ -11,7 +11,7 @@ Focused fixes, tests, DSH integration improvements, and documentation changes ar
 
 ## Architecture and scope
 
-DSH Vision Toolkit is an out-of-tree DeepSeek Harness Profile Bundle. Contributions must preserve these responsibilities:
+DSH Vision Cloud is an out-of-tree DeepSeek Harness Profile Bundle. Contributions must preserve these responsibilities:
 
 - `vision_cloud_tool` is the only model-facing tool; it reads images through the DSH app's configured model via `ctx.llm.stream`.
 - The output contract follows modlens v2 (`summary` / `ocr` / `layout` / `semantics` / `visual` / `uncertainty`); do not add pixel bounding boxes or numeric confidence.

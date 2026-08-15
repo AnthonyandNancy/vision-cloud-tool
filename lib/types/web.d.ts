@@ -2,7 +2,7 @@
  * Optional Web-profile routes: the minimal Settings endpoint (model list, save,
  * test read) plus the paste-images route. No secrets, no health/credential
  * surface — the DSH app owns the model's endpoint and key.
- * @module dsh-vision-toolkit/web
+ * @module dsh-vision-cloud/web
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Context } from '@deepseek-ai/cordis';
@@ -10,7 +10,7 @@ import { PastedImageBackend } from './paste-images.ts';
 import { type VisionToolkitConfig } from './config.ts';
 import type { VisionToolkitRuntime } from './runtime.ts';
 /** Exact route used by the browser Settings page. */
-export declare const SETTINGS_ROUTE = "/_dsh/vision-toolkit/settings";
+export declare const SETTINGS_ROUTE = "/_dsh/vision-cloud/settings";
 /** One selectable model under one registered provider route. */
 export interface VisionModelEntry {
     id: string;

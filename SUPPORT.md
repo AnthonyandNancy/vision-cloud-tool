@@ -3,7 +3,7 @@
 ## Start here
 
 - Read the [README](README.md) for installation, configuration, usage, security, scope, and troubleshooting.
-- Search existing [issues](https://github.com/Anionex/dsh-vision-toolkit/issues) and [pull requests](https://github.com/Anionex/dsh-vision-toolkit/pulls) before opening a duplicate.
+- Search existing [issues](https://github.com/Anionex/dsh-vision-cloud/issues) and [pull requests](https://github.com/Anionex/dsh-vision-cloud/pulls) before opening a duplicate.
 
 ## Where to ask
 
@@ -13,7 +13,7 @@
 - Security concern: follow [SECURITY.md](SECURITY.md) and report it privately.
 - Code contribution: read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
-Open the repository's [issue chooser](https://github.com/Anionex/dsh-vision-toolkit/issues/new/choose) to select the appropriate form.
+Open the repository's [issue chooser](https://github.com/Anionex/dsh-vision-cloud/issues/new/choose) to select the appropriate form.
 
 ## Information to include
 

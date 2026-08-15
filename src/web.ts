@@ -2,7 +2,7 @@
  * Optional Web-profile routes: the minimal Settings endpoint (model list, save,
  * test read) plus the paste-images route. No secrets, no health/credential
  * surface — the DSH app owns the model's endpoint and key.
- * @module dsh-vision-toolkit/web
+ * @module dsh-vision-cloud/web
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -21,7 +21,7 @@ import { PLUGIN_VERSION } from './version.ts'
 import { sameOriginPost } from './web-request.ts'
 
 /** Exact route used by the browser Settings page. */
-export const SETTINGS_ROUTE = '/_dsh/vision-toolkit/settings'
+export const SETTINGS_ROUTE = '/_dsh/vision-cloud/settings'
 
 /** One selectable model under one registered provider route. */
 export interface VisionModelEntry {
@@ -83,7 +83,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function descriptorOf(ctx: Context): SettingsDescriptor {
   const descriptor = ctx.settings.describe().find(row => row.ns === VISION_TOOLKIT_SETTINGS_NAMESPACE)
-  if (descriptor === undefined) throw new Error('vision-toolkit Settings namespace is not registered')
+  if (descriptor === undefined) throw new Error('vision-cloud Settings namespace is not registered')
   return descriptor
 }
 
@@ -211,7 +211,7 @@ export class VisionToolkitWebBackend {
     await runtime.selfTest({
       signal: controller.signal,
       workspace: process.cwd(),
-      sessionId: 'vision-toolkit-settings',
+      sessionId: 'vision-cloud-settings',
     })
     return this.snapshot()
   }
@@ -222,7 +222,7 @@ export class VisionToolkitWebBackend {
       try {
         responseJson(res, 200, { ok: true, value: await this.snapshot() })
       } catch (error) {
-        this.ctx.logger.warn('dsh-vision-toolkit Settings snapshot failed: %s', publicMessage(error))
+        this.ctx.logger.warn('dsh-vision-cloud Settings snapshot failed: %s', publicMessage(error))
         requestError(res, 503, 'settings-unavailable', 'Vision Cloud Settings are unavailable')
       }
       return
@@ -250,7 +250,7 @@ export class VisionToolkitWebBackend {
         responseJson(res, 200, { ok: true, value: await this.save(parsed) })
       }
     } catch (error) {
-      this.ctx.logger.warn('dsh-vision-toolkit Web action=%s failed: %s', parsed.action, publicMessage(error))
+      this.ctx.logger.warn('dsh-vision-cloud Web action=%s failed: %s', parsed.action, publicMessage(error))
       requestError(res, 400, 'settings-rejected', publicMessage(error))
     }
   }
@@ -283,6 +283,6 @@ export function installVisionToolkitWeb(
         disposePasteImages()
         disposeSettings()
       }
-    }, 'dsh-vision-toolkit: Web routes')
+    }, 'dsh-vision-cloud: Web routes')
   })
 }

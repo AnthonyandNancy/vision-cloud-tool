@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>DSH Vision Toolkit — online vision for DeepSeek Harness</title>
+    <title>DSH Vision Cloud — online vision for DeepSeek Harness</title>
     <meta name="description" content="One online vision tool for DeepSeek Harness: read images through the app's configured model with modlens v2 structured output." />
-    <meta property="og:title" content="DSH Vision Toolkit — online vision for DeepSeek Harness" />
+    <meta property="og:title" content="DSH Vision Cloud — online vision for DeepSeek Harness" />
     <meta property="og:description" content="vision_cloud_tool reads images through a DSH app model and returns modlens v2 evidence. No Python, no local tools, no extra key." />
-    <meta property="og:image" content="https://github.com/Anionex/dsh-vision-toolkit/raw/main/assets/social-preview.png" />
+    <meta property="og:image" content="https://github.com/Anionex/dsh-vision-cloud/raw/main/assets/social-preview.png" />
     <meta name="theme-color" content="#5b4cf0" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%235b4cf0'/%3E%3Cpath d='M13 46 25 34l11-16M25 34h20M45 34l7 12' fill='none' stroke='white' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
     <style>
@@ -55,13 +55,13 @@
           <span class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none"><path d="M5 17.5 9.5 13M9.5 13l4-6M9.5 13h7M16.5 13l2.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="5" cy="17.5" r="2" fill="currentColor"/><circle cx="9.5" cy="13" r="2" fill="currentColor"/><circle cx="13.5" cy="7" r="2" fill="currentColor"/><circle cx="16.5" cy="13" r="2" fill="currentColor"/><circle cx="19" cy="17.5" r="2" fill="currentColor"/></svg>
           </span>
-          DSH Vision Toolkit
+          DSH Vision Cloud
         </div>
         <div class="nav-links">
           <a href="#capabilities">Capabilities</a>
           <a href="#install">Install</a>
-          <a href="https://github.com/Anionex/dsh-vision-toolkit">GitHub</a>
-          <a href="https://github.com/Anionex/dsh-vision-toolkit/blob/main/README.zh.md">中文</a>
+          <a href="https://github.com/Anionex/dsh-vision-cloud">GitHub</a>
+          <a href="https://github.com/Anionex/dsh-vision-cloud/blob/main/README.zh.md">中文</a>
         </div>
       </nav>
 
@@ -72,11 +72,11 @@
           <p class="lede"><code>vision_cloud_tool</code> reads images through a model you already configured in DeepSeek Harness, and returns modlens v2 evidence — summary, transcription, layout, semantics, visual clues, uncertainty. No Python, no local tools, no extra key.</p>
           <div class="actions">
             <a class="button primary" href="#install">Install</a>
-            <a class="button" href="https://github.com/Anionex/dsh-vision-toolkit">GitHub</a>
+            <a class="button" href="https://github.com/Anionex/dsh-vision-cloud">GitHub</a>
           </div>
         </div>
         <div class="hero-card">
-          <img src="assets/vision-settings.png" alt="DSH Vision Toolkit Settings with a vision model selector and test read." />
+          <img src="assets/vision-settings.png" alt="DSH Vision Cloud Settings with a vision model selector and test read." />
         </div>
       </div>
     </header>
@@ -100,17 +100,17 @@
             <h2>Install into a profile.</h2>
             <p>Requires DeepSeek Harness and Node.js 22.19+ or 24. After restarting a Web profile, open Settings → Vision, pick a model, and save.</p>
           </div>
-          <pre><code>dsh plugin --profile web add @anionex/dsh-vision-toolkit
-dsh plugin --profile headless add @anionex/dsh-vision-toolkit
+          <pre><code>dsh plugin --profile web add dsh-vision-cloud
+dsh plugin --profile headless add dsh-vision-cloud
 
-dsh --profile web --dump-config | grep vision-toolkit</code></pre>
+dsh --profile web --dump-config | grep vision-cloud</code></pre>
         </div>
       </section>
     </main>
 
     <footer class="shell">
       <span>DeepSeek Harness online vision plugin · MIT · Anionex</span>
-      <span><a href="https://github.com/Anionex/dsh-vision-toolkit">DSH repository</a></span>
+      <span><a href="https://github.com/Anionex/dsh-vision-cloud">DSH repository</a></span>
     </footer>
   </body>
 </html>
