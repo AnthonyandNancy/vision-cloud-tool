@@ -34,7 +34,7 @@ async function setup(cwd: string, maxImageBytes = 1024) {
     sessions: { get: (sessionId: string) => sessionId === 'session-1' ? { header: { cwd } } : undefined },
     logger: { warn: vi.fn() },
   }
-  const backend = new PastedImageBackend(ctx as never, { maxImageBytes: () => maxImageBytes })
+  const backend = new PastedImageBackend(ctx as never, { maxImageBytes: () => maxImageBytes, pasteToPath: () => true })
   const server = createServer((req, res) => { void backend.handle(req, res) })
   servers.push(server)
   await new Promise<void>((resolve, reject) => {

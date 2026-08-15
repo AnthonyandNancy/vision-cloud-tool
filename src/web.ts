@@ -43,6 +43,7 @@ export interface VisionToolkitSettingsSnapshot {
   writable: boolean
   pluginVersion: string
   enabled: boolean
+  pasteToPath: boolean
   settings: {
     value: VisionToolkitConfig
     revision: number
@@ -171,6 +172,7 @@ export class VisionToolkitWebBackend {
       writable: this.ctx.settings.writable,
       pluginVersion: PLUGIN_VERSION,
       enabled: resolveConfig(value).model !== undefined,
+      pasteToPath: resolveConfig(value).pasteToPath,
       settings: {
         value,
         revision: descriptor.revision,

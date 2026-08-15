@@ -191,6 +191,7 @@ async function writeImage(
 /** Runtime limit face kept separate for focused backend tests. */
 export interface PasteImageRuntime {
   maxImageBytes(): number
+  pasteToPath(): boolean
 }
 
 /** Same-origin, live-Session-bound image upload endpoint. */
@@ -200,10 +201,63 @@ export class PastedImageBackend {
     private readonly runtime: PasteImageRuntime,
   ) {}
 
+  /**
+   * Whether the model behind a selector label is text-only (and therefore
+   * needs a paste-to-path takeover). A match that declares image input vetoes
+   * the takeover, so a multimodal model keeps its native paste.
+   */
+  private async takeoverVerdict(label: string): Promise<boolean> {
+    const llm = this.ctx.llm
+    if (label.trim() === '' || llm === undefined || typeof llm.listProviders !== 'function' || typeof llm.listModels !== 'function') {
+      return false
+    }
+    const lowered = label.toLowerCase()
+    let matchedTextOnly = false
+    for (const info of llm.listProviders()) {
+      const providerId = info?.id
+      if (providerId === undefined) continue
+      let models: Array<{ id?: string; name?: string; inputModalities?: readonly string[] }>
+      try {
+        models = await llm.listModels(providerId) as unknown as typeof models
+      } catch {
+        continue
+      }
+      for (const model of models) {
+        const modalities = model?.inputModalities
+        for (const candidate of [model?.name, model?.id]) {
+          if (typeof candidate !== 'string' || candidate.length < 3) continue
+          if (!lowered.includes(candidate.toLowerCase())) continue
+          if (Array.isArray(modalities) && modalities.includes('image')) return false
+          matchedTextOnly = true
+        }
+      }
+    }
+    return matchedTextOnly
+  }
+
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    if (!this.runtime.pasteToPath()) {
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'paste-to-path disabled' }))
+      return
+    }
+    if (req.method === 'GET') {
+      try {
+        const url = new URL(req.url ?? PASTE_IMAGES_ROUTE, 'http://dsh.internal')
+        const label = url.searchParams.get('model') ?? ''
+        const takeover = await this.takeoverVerdict(label)
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ takeover }))
+      } catch (error) {
+        this.ctx.logger.warn('dsh-vision-toolkit paste verdict failed: %s', message(error))
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ takeover: false }))
+      }
+      return
+    }
     if (req.method !== 'POST') {
-      res.setHeader('Allow', 'POST')
-      requestError(res, 405, 'method-not-allowed', 'Use POST')
+      res.setHeader('Allow', 'GET, POST')
+      requestError(res, 405, 'method-not-allowed', 'Use GET or POST')
       return
     }
     if (!sameOriginPost(req)) {

@@ -147,6 +147,62 @@ export class PasteImageController {
     for (const listener of this.listeners) listener()
   }
 
+  private readonly VERDICT_MAX_AGE_MS = 60000
+  private verdicts = new Map<string, { takeover: boolean; at: number; pending: boolean }>()
+  private routeAvailable = true
+
+  /** Best-effort current model selector label (the host owns the real verdict). */
+  private currentModelLabel(): string {
+    const buttons = document.querySelectorAll('button[aria-label]')
+    for (const button of buttons) {
+      const label = button.getAttribute('aria-label') ?? ''
+      if (/选择模型|select model|current model|当前模型/i.test(label)) return label
+    }
+    return ''
+  }
+
+  private refreshVerdict(label: string): void {
+    if (!this.routeAvailable || label === '') return
+    const cached = this.verdicts.get(label)
+    if (cached?.pending) return
+    const entry = { pending: true, takeover: cached?.takeover ?? false, at: cached?.at ?? 0 }
+    this.verdicts.set(label, entry)
+    fetch(`${PASTE_IMAGES_ROUTE}?model=${encodeURIComponent(label)}`)
+      .then((res) => {
+        if (res.status === 404) {
+          this.routeAvailable = false
+          entry.pending = false
+          return null
+        }
+        if (!res.ok) throw new Error(`policy ${res.status}`)
+        return res.json() as Promise<{ takeover?: unknown }>
+      })
+      .then((body) => {
+        entry.pending = false
+        if (body) {
+          entry.takeover = body.takeover === true
+          entry.at = Date.now()
+        }
+      })
+      .catch(() => { entry.pending = false })
+  }
+
+  /** Take over a paste only when the host confirmed a text-only model. */
+  private shouldTakeover(): boolean {
+    const label = this.currentModelLabel()
+    const cached = this.verdicts.get(label)
+    if (!cached || cached.pending || cached.at === 0 || Date.now() - cached.at > this.VERDICT_MAX_AGE_MS) {
+      this.refreshVerdict(label)
+      return false
+    }
+    return cached.takeover
+  }
+
+  /** Prefetch the paste takeover verdict (called on composer focus). */
+  prefetch(): void {
+    this.refreshVerdict(this.currentModelLabel())
+  }
+
   source(): InputTriggerSource {
     return {
       trigger: '@',
@@ -239,6 +295,10 @@ export class PasteImageController {
     if (files.length === 0) return false
     const target = event.target
     if (!(target instanceof HTMLTextAreaElement) || target.closest('[data-composer-card]') === null) return false
+
+    // Leave the paste native for a multimodal model (or an unresolved one):
+    // only a confirmed text-only model gets the paste-to-path takeover.
+    if (!this.shouldTakeover()) return false
 
     event.preventDefault()
     event.stopPropagation()
@@ -411,8 +471,13 @@ export function installPasteImages(ctx: ClientContext): void {
   })
   ctx.effect(() => {
     const listener = (event: ClipboardEvent): void => { controller.handlePaste(event) }
+    const onFocus = (): void => { controller.prefetch() }
     document.addEventListener('paste', listener, true)
-    return () => { document.removeEventListener('paste', listener, true) }
+    document.addEventListener('focusin', onFocus, true)
+    return () => {
+      document.removeEventListener('paste', listener, true)
+      document.removeEventListener('focusin', onFocus, true)
+    }
   }, 'dsh-vision-toolkit: clipboard image capture')
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock',

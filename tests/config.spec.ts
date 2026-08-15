@@ -6,7 +6,7 @@ describe('config', () => {
     const config = resolveConfig()
     expect(config.model).toBeUndefined()
     expect(config.language).toBe('zh')
-    expect(config.timeoutMs).toBe(60000)
+    expect(config.timeoutMs).toBe(180000)
     expect(config.maxImageBytes).toBe(10485760)
     expect(config.maxImagePixels).toBe(40000000)
     expect(config.concurrency).toBe(4)

@@ -84,6 +84,13 @@ export function apply(ctx: Context, config: VisionToolkitConfig = {}): () => voi
         return 10485760
       }
     },
+    pasteToPath: () => {
+      try {
+        return resolveConfig(settings.get() as VisionToolkitConfig).pasteToPath
+      } catch {
+        return true
+      }
+    },
   })
   installVisionToolkitWeb(ctx, backend, pastedImages)
 

@@ -28,6 +28,8 @@ export interface VisionToolkitConfig {
     maxImages?: number;
     /** Extra directories (besides the workspace) inputs may come from. */
     allowedDirs?: string[];
+    /** Paste-to-path bridge: convert pasted images to workspace paths for text-only models. */
+    pasteToPath?: boolean;
 }
 /** Configuration schema with documented defaults. */
 export declare const Config: Schema<VisionToolkitConfig>;
@@ -44,6 +46,7 @@ export interface ResolvedVisionToolkitConfig {
     concurrency: number;
     maxImages: number;
     allowedDirs: string[];
+    pasteToPath: boolean;
 }
 /**
  * Validate and normalize a config object (partial inputs receive the same

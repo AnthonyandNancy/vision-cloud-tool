@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createElement, type ComponentType } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -160,8 +160,29 @@ function composer(): HTMLTextAreaElement {
   const textarea = document.createElement('textarea')
   card.appendChild(textarea)
   document.body.appendChild(card)
+  const selector = document.createElement('button')
+  selector.setAttribute('aria-label', '选择模型 · DeepSeek-V4-Flash')
+  document.body.appendChild(selector)
   return textarea
 }
+
+/** Fire the focusin prefetch and wait for the paste-takeover verdict to cache. */
+async function armTakeover(): Promise<void> {
+  document.dispatchEvent(new FocusEvent('focusin'))
+  await new Promise(resolve => setTimeout(resolve, 10))
+}
+
+beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') {
+      return new Response(JSON.stringify({
+        ok: true,
+        value: { absolutePath: '/workspace/.dsh-vision-toolkit/tmp/pasted-images/a/default.png' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }
+    return new Response(JSON.stringify({ takeover: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }))
+})
 
 afterEach(() => {
   document.body.replaceChildren()
@@ -266,6 +287,7 @@ describe('clipboard image client', () => {
     textarea.setSelectionRange(7, 7)
     const nativePaste = vi.fn()
     textarea.addEventListener('paste', nativePaste)
+    await armTakeover()
     const request = vi.fn(async (url: string, init: RequestInit) => {
       expect(init.body).toBeInstanceOf(File)
       const index = request.mock.calls.length - 1
@@ -321,7 +343,7 @@ describe('clipboard image client', () => {
     bench.dispose()
   })
 
-  it('preserves same-paste text when image admission fails', () => {
+  it('preserves same-paste text when image admission fails', async () => {
     const bench = fakeClient('before ')
     const textarea = composer()
     textarea.value = 'before '
@@ -329,6 +351,7 @@ describe('clipboard image client', () => {
     const images = Array.from({ length: 21 }, (_, index) => file(`${index}.png`, 'image/png', [index]))
     const event = clipboardEvent('caption', images)
 
+    await armTakeover()
     textarea.dispatchEvent(event)
 
     expect(event.defaultPrevented).toBe(true)
@@ -338,9 +361,10 @@ describe('clipboard image client', () => {
     bench.dispose()
   })
 
-  it('removes references through insertText so later occurrence offsets stay current', () => {
+  it('removes references through insertText so later occurrence offsets stay current', async () => {
     const bench = fakeClient('')
     const textarea = composer()
+    await armTakeover()
     textarea.dispatchEvent(clipboardEvent('', [
       file('one.png', 'image/png', [1]),
       file('two.png', 'image/png', [2]),
@@ -384,9 +408,10 @@ describe('clipboard image client', () => {
     bench.dispose()
   })
 
-  it('retains a pasted image record when the occurrence-aware removal is rejected', () => {
+  it('retains a pasted image record when the occurrence-aware removal is rejected', async () => {
     const bench = fakeClient('')
     const textarea = composer()
+    await armTakeover()
     textarea.dispatchEvent(clipboardEvent('', [file('one.png', 'image/png', [1])]))
     const dock = bench.registrations.find(row => row.options.id === 'vision-toolkit-pasted-images')
     if (dock === undefined) throw new Error('paste dock was not registered')
@@ -408,6 +433,7 @@ describe('clipboard image client', () => {
   it('reuses successful workspace paths and retries only records still missing a path', async () => {
     const bench = fakeClient('')
     const textarea = composer()
+    await armTakeover()
     let secondAttempts = 0
     const request = vi.fn(async (url: string) => {
       const name = new URL(String(url), 'http://localhost').searchParams.get('name')
@@ -459,6 +485,7 @@ describe('clipboard image client', () => {
   it('keeps failed serialization out of the model send and exposes retry/removal feedback', async () => {
     const bench = fakeClient('')
     const textarea = composer()
+    await armTakeover()
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       ok: false,
       error: { message: 'workspace copy failed' },

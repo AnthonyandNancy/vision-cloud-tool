@@ -34,6 +34,8 @@ export interface VisionToolkitConfig {
   maxImages?: number
   /** Extra directories (besides the workspace) inputs may come from. */
   allowedDirs?: string[]
+  /** Paste-to-path bridge: convert pasted images to workspace paths for text-only models. */
+  pasteToPath?: boolean
 }
 
 /** Configuration schema with documented defaults. */
@@ -43,12 +45,13 @@ export const Config: Schema<VisionToolkitConfig> = z.object({
     model: z.string(),
   }),
   language: z.union(['zh', 'en'] as const).default('zh'),
-  timeoutMs: z.number().default(60000),
+  timeoutMs: z.number().default(180000),
   maxImageBytes: z.number().default(10485760),
   maxImagePixels: z.number().default(40000000),
   concurrency: z.number().default(4),
   maxImages: z.number().default(8),
   allowedDirs: z.array(z.string()).default([]),
+  pasteToPath: z.boolean().default(true),
 })
 
 /** Configuration after static validation, with every default materialized. */
@@ -61,6 +64,7 @@ export interface ResolvedVisionToolkitConfig {
   concurrency: number
   maxImages: number
   allowedDirs: string[]
+  pasteToPath: boolean
 }
 
 const MAX_TIMEOUT_MS = 600000
@@ -79,7 +83,7 @@ export function resolveConfig(config: VisionToolkitConfig = {}): ResolvedVisionT
   if (language !== 'zh' && language !== 'en') {
     throw new VisionToolkitError('config', 'language must be "zh" or "en"')
   }
-  const timeoutMs = config.timeoutMs ?? 60000
+  const timeoutMs = config.timeoutMs ?? 180000
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new VisionToolkitError('config', `timeoutMs must be an integer between 1000 and ${MAX_TIMEOUT_MS}`)
   }
@@ -100,6 +104,7 @@ export function resolveConfig(config: VisionToolkitConfig = {}): ResolvedVisionT
     throw new VisionToolkitError('config', `maxImages must be an integer between 1 and ${MAX_IMAGES}`)
   }
   const allowedDirs = (config.allowedDirs ?? []).map(dir => dir.trim()).filter(dir => dir.length > 0)
+  const pasteToPath = config.pasteToPath ?? true
 
   let model: ResolvedVisionToolkitConfig['model']
   if (config.model !== undefined) {
@@ -125,5 +130,6 @@ export function resolveConfig(config: VisionToolkitConfig = {}): ResolvedVisionT
     concurrency,
     maxImages,
     allowedDirs,
+    pasteToPath,
   }
 }

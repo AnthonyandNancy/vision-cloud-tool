@@ -5,8 +5,8 @@
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 declare const en: {
-    readonly nav: "Vision";
-    readonly settingsTitle: "Vision Cloud";
+    readonly nav: "Vision Tool";
+    readonly settingsTitle: "Vision Tool";
     readonly settingsIntro: "Pick a model configured in DSH so vision_cloud_tool can read images through it.";
     readonly model: "Vision model";
     readonly modelHint: "Leave \"Off\" to keep vision_cloud_tool unregistered. Selecting a model registers the tool immediately.";
@@ -35,6 +35,8 @@ declare const en: {
     readonly testOk: "Test read succeeded.";
     readonly testFailed: "Test read failed";
     readonly noModel: "Select a vision model and save before testing.";
+    readonly pasteToPath: "Paste-to-path bridge";
+    readonly pasteToPathHint: "Convert pasted images into workspace paths for text-only models. Leave off to keep pastes native.";
 };
 type LocaleKey = keyof typeof en;
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -54,6 +56,7 @@ interface SettingsValue {
     concurrency?: number;
     maxImages?: number;
     allowedDirs?: string[];
+    pasteToPath?: boolean;
 }
 interface VisionModelEntry {
     id: string;
@@ -70,6 +73,7 @@ interface SettingsSnapshot {
     writable: boolean;
     pluginVersion: string;
     enabled: boolean;
+    pasteToPath: boolean;
     settings: {
         value: SettingsValue;
         revision: number;

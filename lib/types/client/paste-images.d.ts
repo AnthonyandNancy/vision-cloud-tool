@@ -39,6 +39,16 @@ export declare class PasteImageController {
     subscribe: (listener: () => void) => (() => void);
     snapshot: () => number;
     private changed;
+    private readonly VERDICT_MAX_AGE_MS;
+    private verdicts;
+    private routeAvailable;
+    /** Best-effort current model selector label (the host owns the real verdict). */
+    private currentModelLabel;
+    private refreshVerdict;
+    /** Take over a paste only when the host confirmed a text-only model. */
+    private shouldTakeover;
+    /** Prefetch the paste takeover verdict (called on composer focus). */
+    prefetch(): void;
     source(): InputTriggerSource;
     recordsFor(occurrences: readonly PasteOccurrence[]): PasteRecord[];
     private inputFor;

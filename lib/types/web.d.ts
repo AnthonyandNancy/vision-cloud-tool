@@ -29,6 +29,7 @@ export interface VisionToolkitSettingsSnapshot {
     writable: boolean;
     pluginVersion: string;
     enabled: boolean;
+    pasteToPath: boolean;
     settings: {
         value: VisionToolkitConfig;
         revision: number;

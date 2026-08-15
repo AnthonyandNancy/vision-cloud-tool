@@ -10,12 +10,19 @@ export declare function ensurePathInside(root: string, target: string): void;
 /** Runtime limit face kept separate for focused backend tests. */
 export interface PasteImageRuntime {
     maxImageBytes(): number;
+    pasteToPath(): boolean;
 }
 /** Same-origin, live-Session-bound image upload endpoint. */
 export declare class PastedImageBackend {
     private readonly ctx;
     private readonly runtime;
     constructor(ctx: Context, runtime: PasteImageRuntime);
+    /**
+     * Whether the model behind a selector label is text-only (and therefore
+     * needs a paste-to-path takeover). A match that declares image input vetoes
+     * the takeover, so a multimodal model keeps its native paste.
+     */
+    private takeoverVerdict;
     handle(req: IncomingMessage, res: ServerResponse): Promise<void>;
 }
 //# sourceMappingURL=paste-images.d.ts.map
