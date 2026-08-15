@@ -8,14 +8,14 @@
  */
 
 import { readFile } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, extname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, ReasoningEffortId, type ContentBlock, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { ResolvedVisionToolkitConfig } from './config.ts'
 import { VisionToolkitError } from './errors.ts'
 import { readImageHeader, sniffFormat, type ImageFormat } from './image-header.ts'
-import { createPathPolicy, resolveInputFile, type PathPolicy } from './paths.ts'
+import { createPathPolicy, resolveInputFile, SUPPORTED_IMAGE_EXTENSIONS, type PathPolicy } from './paths.ts'
 import { missingSchemaFields, type VisionResult } from './vision-schema.ts'
 import { buildVisionPrompt } from './vision-prompt.ts'
 
@@ -71,6 +71,11 @@ const FORMAT_MEDIA_TYPE: Record<ImageFormat, ImageMediaType> = {
   gif: 'image/gif',
   webp: 'image/webp',
 }
+
+const SUPPORTED_IMAGE_MEDIA_TYPES = new Set<string>(Object.values(FORMAT_MEDIA_TYPE))
+const SUPPORTED_IMAGE_MEDIA_TYPE_ALIASES = new Set(['image/jpg', 'image/pjpeg', 'image/x-png'])
+const SUPPORTED_IMAGE_EXTENSION_SET = new Set<string>(SUPPORTED_IMAGE_EXTENSIONS)
+const OPAQUE_BINARY_MEDIA_TYPES = new Set(['application/octet-stream', 'binary/octet-stream'])
 
 const FORMAT_NAME: Record<ImageFormat, string> = {
   png: 'png',
@@ -184,17 +189,102 @@ interface ResolvedImageBytes {
   name: string
 }
 
+/** Parse a `Content-Type` header down to its lowercase essence, if any. */
+function mediaTypeOf(response: Response): string | undefined {
+  const header = response.headers.get('content-type')
+  if (header === null) return undefined
+  const semicolon = header.indexOf(';')
+  const mediaType = (semicolon >= 0 ? header.slice(0, semicolon) : header).trim().toLowerCase()
+  return mediaType === '' ? undefined : mediaType
+}
+
+/**
+ * Reject obviously non-image URLs before any network I/O. A URL whose path
+ * carries a non-image extension can never be an image; extensionless URLs are
+ * allowed through because signed CDN URLs often omit extensions, and the
+ * response Content-Type/magic-bytes checks below still guard them.
+ */
+function assertImageUrlShape(url: string): void {
+  let pathname: string
+  try {
+    pathname = new URL(url).pathname
+  } catch {
+    return
+  }
+  const extension = extname(pathname).toLowerCase()
+  if (extension !== '' && !SUPPORTED_IMAGE_EXTENSION_SET.has(extension)) {
+    throw new VisionToolkitError(
+      'input',
+      `URL does not point to a supported image format ("${extension}"); supported: ${[...SUPPORTED_IMAGE_EXTENSION_SET].join(', ')}: ${url}`,
+    )
+  }
+}
+
+/**
+ * Verify that a fetched response actually describes image bytes before its
+ * body is downloaded. Opaque binary types (some CDNs and signed URLs) are
+ * allowed through and must still pass the magic-bytes sniff in `readBytes`.
+ */
+function assertImageResponse(response: Response, url: string): void {
+  if (!response.ok) {
+    throw new VisionToolkitError(
+      'service',
+      `image URL returned HTTP ${response.status}${response.statusText === '' ? '' : ` ${response.statusText}`}: ${url}`,
+    )
+  }
+  const mediaType = mediaTypeOf(response)
+  if (mediaType === undefined || mediaType === '' || OPAQUE_BINARY_MEDIA_TYPES.has(mediaType)) return
+  if (SUPPORTED_IMAGE_MEDIA_TYPES.has(mediaType) || SUPPORTED_IMAGE_MEDIA_TYPE_ALIASES.has(mediaType)) return
+  const unsupportedImage = mediaType.startsWith('image/')
+  throw new VisionToolkitError(
+    'input',
+    unsupportedImage
+      ? `unsupported image media type "${mediaType}"; supported: ${[...SUPPORTED_IMAGE_MEDIA_TYPES].join(', ')}: ${url}`
+      : `URL does not point to a supported image (content-type: ${mediaType}); vision_cloud_tool only reads PNG/JPEG/GIF/WebP images, not video/audio or other media: ${url}`,
+  )
+}
+
+/**
+ * Download a response body while enforcing MAX_URL_BYTES as chunks arrive, so
+ * a large video or other stream cannot be buffered past the limit even when
+ * the server omits Content-Length.
+ */
+async function readResponseBytes(response: Response): Promise<Uint8Array> {
+  const stream = response.body
+  if (stream === null) return new Uint8Array(await response.arrayBuffer())
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for await (const chunk of stream) {
+    const bytes = chunk as Uint8Array
+    total += bytes.byteLength
+    if (total > MAX_URL_BYTES) {
+      await stream.cancel().catch(() => {})
+      throw new VisionToolkitError('capacity', `image URL exceeds the ${MAX_URL_BYTES}-byte limit`)
+    }
+    chunks.push(bytes)
+  }
+  return new Uint8Array(Buffer.concat(chunks, total))
+}
+
 async function fetchUrlBytes(url: string, signal: AbortSignal): Promise<ResolvedImageBytes> {
+  assertImageUrlShape(url)
   const controller = new AbortController()
   const onAbort = (): void => { controller.abort() }
   signal.addEventListener('abort', onAbort, { once: true })
   try {
-    const response = await fetch(url, { signal: controller.signal, redirect: 'follow' })
+    let response: Response
+    try {
+      response = await fetch(url, { signal: controller.signal, redirect: 'follow' })
+    } catch (error) {
+      if (signal.aborted) throw error
+      throw new VisionToolkitError('service', `failed to fetch image URL: ${url}`, { cause: error })
+    }
+    assertImageResponse(response, url)
     const length = Number(response.headers.get('content-length') ?? 0)
     if (Number.isFinite(length) && length > 0 && length > MAX_URL_BYTES) {
       throw new VisionToolkitError('capacity', `image URL exceeds the ${MAX_URL_BYTES}-byte limit`)
     }
-    const buffer = Buffer.from(await response.arrayBuffer())
+    const buffer = Buffer.from(await readResponseBytes(response))
     if (buffer.length > MAX_URL_BYTES) {
       throw new VisionToolkitError('capacity', `image URL exceeds the ${MAX_URL_BYTES}-byte limit`)
     }
@@ -217,7 +307,12 @@ async function resolveImageBytes(
   policy: PathPolicy,
   signal: AbortSignal,
 ): Promise<ResolvedImageBytes> {
-  if (/^https?:\/\//i.test(raw)) return fetchUrlBytes(raw, signal)
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
+    if (!/^https?:\/\//i.test(raw)) {
+      throw new VisionToolkitError('input', `only http(s) image URLs are supported: ${raw}`)
+    }
+    return fetchUrlBytes(raw, signal)
+  }
   const resolved = await resolveInputFile(raw, policy)
   const data = await readFile(resolved.path)
   return { data: new Uint8Array(data), source: resolved.path, name: basename(resolved.path) }
