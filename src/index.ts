@@ -9,6 +9,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+// Type-only import activates the optional systemPrompt Context declaration.
+import type {} from '@deepseek-ai/dsh-system-prompt'
 import {
   Config,
   VISION_TOOLKIT_SETTINGS_NAMESPACE,
@@ -25,7 +27,7 @@ export const name = '@anionex/dsh-vision-toolkit'
 
 export { Config }
 
-export const inject = ['tools', 'settings', 'llm', 'attachments', 'sessions']
+export const inject = ['tools', 'settings', 'llm', 'attachments', 'sessions', 'systemPrompt']
 
 /** Plugin entry: validate configuration, then mount the tool when enabled. */
 export function apply(ctx: Context, config: VisionToolkitConfig = {}): () => void {
@@ -37,11 +39,14 @@ export function apply(ctx: Context, config: VisionToolkitConfig = {}): () => voi
 
   const lifecycle = new AbortController()
   let toolDisposer: (() => void) | undefined
+  let promptDisposer: (() => void) | undefined
   let currentRuntime: VisionToolkitRuntime | undefined
 
   const ensureTool = (raw: VisionToolkitConfig): void => {
     toolDisposer?.()
     toolDisposer = undefined
+    promptDisposer?.()
+    promptDisposer = undefined
     currentRuntime = undefined
     const resolved = resolveConfig(raw)
     if (resolved.model === undefined) {
@@ -50,6 +55,11 @@ export function apply(ctx: Context, config: VisionToolkitConfig = {}): () => voi
     }
     currentRuntime = new VisionToolkitRuntime(ctx, resolved)
     toolDisposer = ctx.tools.register(createVisionCloudTool(currentRuntime, lifecycle.signal))
+    promptDisposer = ctx.systemPrompt.section({
+      name: 'vision-toolkit:tool',
+      order: 40,
+      text: 'To read or analyze an image (a workspace image path, an http(s) URL, or a pasted image attachment id), use the vision_cloud_tool: it reads images through the app\'s configured vision model and returns structured evidence, so it works even when you cannot accept image input yourself. Do not call read_image unless you are an image-capable model — read_image only hands the image back to a model that can see it.',
+    })
     ctx.logger.info(
       'dsh-vision-toolkit %s: vision_cloud_tool registered (model %s/%s)',
       PLUGIN_VERSION,
@@ -89,6 +99,7 @@ export function apply(ctx: Context, config: VisionToolkitConfig = {}): () => voi
   return () => {
     lifecycle.abort()
     toolDisposer?.()
+    promptDisposer?.()
     watch()
   }
 }
