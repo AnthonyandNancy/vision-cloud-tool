@@ -1,4 +1,4 @@
-/** Clipboard-only multi-image input for DSH Web. */
+/** Clipboard and drag-and-drop multi-image input for DSH Web. */
 
 import { useSyncExternalStore, type ReactNode } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -187,7 +187,7 @@ export class PasteImageController {
       .catch(() => { entry.pending = false })
   }
 
-  /** Take over a paste only when the host confirmed a text-only model. */
+  /** Take over paste/drop only when the host confirmed a text-only model. */
   private shouldTakeover(): boolean {
     const label = this.currentModelLabel()
     const cached = this.verdicts.get(label)
@@ -198,7 +198,7 @@ export class PasteImageController {
     return cached.takeover
   }
 
-  /** Prefetch the paste takeover verdict (called on composer focus). */
+  /** Prefetch the paste/drop takeover verdict (called on composer focus/drag enter). */
   prefetch(): void {
     this.refreshVerdict(this.currentModelLabel())
   }
@@ -320,6 +320,56 @@ export class PasteImageController {
       requestAnimationFrame(() => {
         target.focus({ preventScroll: true })
         target.setSelectionRange(cursor, cursor)
+      })
+    } catch (error) {
+      input.notify('error', message(error))
+    }
+    return true
+  }
+
+  handleDrop(event: DragEvent): boolean {
+    const files = imageFiles(event.dataTransfer)
+    if (files.length === 0) return false
+
+    // Find the composer textarea the drop landed on, falling back to the
+    // focused composer when the drop target is a decorative child.
+    const target = event.target
+    const card = target instanceof Element ? target.closest('[data-composer-card]') : null
+    const textarea = card?.querySelector('textarea')
+      ?? (document.activeElement instanceof HTMLTextAreaElement
+        && document.activeElement.closest('[data-composer-card]') !== null
+        ? document.activeElement
+        : null)
+      ?? document.querySelector<HTMLTextAreaElement>('[data-composer-card] textarea')
+    if (!(textarea instanceof HTMLTextAreaElement)) return false
+
+    // Leave the drop native for a multimodal model (or an unresolved one):
+    // only a confirmed text-only model gets the paste-to-path takeover.
+    if (!this.shouldTakeover()) return false
+
+    event.preventDefault()
+    event.stopPropagation()
+    event.stopImmediatePropagation()
+    // The native DSH drop handler normally resets its drag overlay here; since
+    // this capture-phase takeover stops that handler, tell it to reset now.
+    window.dispatchEvent(new Event('dragend'))
+
+    const sessionId = this.ctx.sessions.list.getSnapshot().current
+    if (sessionId === undefined) return true
+    const input = this.inputFor(sessionId)
+    const snapshot = input.state.getSnapshot()
+    if (snapshot.phase !== 'plain') return true
+
+    const start = Math.max(0, Math.min(textarea.selectionStart ?? snapshot.draft.length, snapshot.draft.length))
+    const end = Math.max(start, Math.min(textarea.selectionEnd ?? start, snapshot.draft.length))
+    const text = (event.dataTransfer?.getData('text/plain') ?? '').replaceAll('\uFFFC', '')
+    try {
+      let cursor = this.insertText(input, text, start, end)
+      validateImages(files)
+      cursor = this.insertRecords(String(sessionId), input, files, cursor)
+      requestAnimationFrame(() => {
+        textarea.focus({ preventScroll: true })
+        textarea.setSelectionRange(cursor, cursor)
       })
     } catch (error) {
       input.notify('error', message(error))
@@ -471,14 +521,22 @@ export function installPasteImages(ctx: ClientContext): void {
   })
   ctx.effect(() => {
     const listener = (event: ClipboardEvent): void => { controller.handlePaste(event) }
+    const onDrop = (event: DragEvent): void => { controller.handleDrop(event) }
     const onFocus = (): void => { controller.prefetch() }
+    const onDragEnter = (event: DragEvent): void => {
+      if (event.dataTransfer?.types.includes('Files') ?? false) controller.prefetch()
+    }
     document.addEventListener('paste', listener, true)
+    document.addEventListener('drop', onDrop, true)
+    document.addEventListener('dragenter', onDragEnter, true)
     document.addEventListener('focusin', onFocus, true)
     return () => {
       document.removeEventListener('paste', listener, true)
+      document.removeEventListener('drop', onDrop, true)
+      document.removeEventListener('dragenter', onDragEnter, true)
       document.removeEventListener('focusin', onFocus, true)
     }
-  }, 'dsh-vision-cloud: clipboard image capture')
+  }, 'dsh-vision-cloud: image capture')
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock',
     id: 'vision-cloud-pasted-images',

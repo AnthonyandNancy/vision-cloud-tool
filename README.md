@@ -92,7 +92,7 @@ The Web profile registers a minimal **Vision Cloud** section:
 - **Test read** — performs one tiny real read through the selected model.
 - **Advanced** — output language, timeout, byte/pixel limits, concurrency, per-call image cap, and additional readable directories.
 
-Pasting an image into the Web composer copies it into the session workspace and inserts its path as text, so the model can hand that path to `vision_cloud_tool` (the same bridge the original plugin shipped; it has no Python and no runtime dependency).
+Pasting or dragging an image into the Web composer copies it into the session workspace and inserts its path as text, so the model can hand that path to `vision_cloud_tool` (the same bridge the original plugin shipped; it has no Python and no runtime dependency).
 
 ## Requirements
 

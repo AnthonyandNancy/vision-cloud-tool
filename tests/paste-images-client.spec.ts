@@ -154,6 +154,17 @@ function clipboardEvent(text: string, files: File[]): ClipboardEvent {
   return event
 }
 
+function dropEvent(text: string, files: File[]): DragEvent {
+  const event = new Event('drop', { bubbles: true, cancelable: true }) as DragEvent
+  const data = {
+    items: files.map(value => ({ kind: 'file', type: value.type, getAsFile: () => value })),
+    files,
+    getData: (type: string) => type === 'text/plain' ? text : '',
+  }
+  Object.defineProperty(event, 'dataTransfer', { value: data })
+  return event
+}
+
 function composer(): HTMLTextAreaElement {
   const card = document.createElement('div')
   card.dataset.composerCard = ''
@@ -324,6 +335,74 @@ describe('clipboard image client', () => {
       '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-01.png"]',
       '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-02.webp"]',
     ])
+    bench.dispose()
+  })
+
+  it('converts dropped images to text references for a confirmed text-only model and blocks the native ImageBlock path', async () => {
+    const bench = fakeClient('prefix ')
+    const textarea = composer()
+    textarea.value = 'prefix '
+    textarea.setSelectionRange(7, 7)
+    const nativeDrop = vi.fn()
+    textarea.addEventListener('drop', nativeDrop)
+    await armTakeover()
+    const request = vi.fn(async (url: string, init: RequestInit) => {
+      expect(init.body).toBeInstanceOf(File)
+      const index = request.mock.calls.length - 1
+      return new Response(JSON.stringify({
+        ok: true,
+        value: { absolutePath: index === 0
+          ? '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-01.png'
+          : '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-02.webp' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', request)
+
+    const event = dropEvent('caption', [
+      file('one.png', 'image/png', [1]),
+      file('notes.txt', 'text/plain', [9]),
+      file('two.webp', 'image/webp', [2, 3]),
+    ])
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(nativeDrop).not.toHaveBeenCalled()
+    expect(bench.input.state.getSnapshot().draft).toContain('prefix caption')
+    expect(bench.input.state.getSnapshot().draft.match(/\uFFFC/gu)).toHaveLength(2)
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(2)
+    expect(bench.input.state.getSnapshot().imageIds).toEqual([])
+
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const refs = bench.input.state.getSnapshot().occurrences.map(row => row.ref)
+    const serialized = await Promise.all(refs.map(ref => codec.serialize(ref, new AbortController().signal)))
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(request.mock.calls.every(([url]) => String(url).startsWith('/_dsh/vision-cloud/paste-images?'))).toBe(true)
+    expect(serialized).toEqual([
+      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-01.png"]',
+      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-02.webp"]',
+    ])
+    bench.dispose()
+  })
+
+  it('leaves dropped images native when the model is not confirmed text-only', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    const nativeDrop = vi.fn()
+    textarea.addEventListener('drop', nativeDrop)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ takeover: false }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    await armTakeover()
+    const event = dropEvent('', [file('one.png', 'image/png', [1])])
+
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(nativeDrop).toHaveBeenCalledTimes(1)
+    expect(bench.input.state.getSnapshot().draft).toBe('')
+    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
     bench.dispose()
   })
 

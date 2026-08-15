@@ -43,7 +43,7 @@ export interface VisionToolkitConfig {
    * still enforced.
    */
   allowExtensionlessImageUrls?: boolean
-  /** Paste-to-path bridge: convert pasted images to workspace paths for text-only models. */
+  /** Paste/drop-to-path bridge: convert pasted or dropped images to workspace paths for text-only models. */
   pasteToPath?: boolean
 }
 

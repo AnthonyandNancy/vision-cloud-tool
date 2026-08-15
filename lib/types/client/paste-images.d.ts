@@ -1,4 +1,4 @@
-/** Clipboard-only multi-image input for DSH Web. */
+/** Clipboard and drag-and-drop multi-image input for DSH Web. */
 import { type ReactNode } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client';
@@ -45,9 +45,9 @@ export declare class PasteImageController {
     /** Best-effort current model selector label (the host owns the real verdict). */
     private currentModelLabel;
     private refreshVerdict;
-    /** Take over a paste only when the host confirmed a text-only model. */
+    /** Take over paste/drop only when the host confirmed a text-only model. */
     private shouldTakeover;
-    /** Prefetch the paste takeover verdict (called on composer focus). */
+    /** Prefetch the paste/drop takeover verdict (called on composer focus/drag enter). */
     prefetch(): void;
     source(): InputTriggerSource;
     recordsFor(occurrences: readonly PasteOccurrence[]): PasteRecord[];
@@ -55,6 +55,7 @@ export declare class PasteImageController {
     private insertText;
     private insertRecords;
     handlePaste(event: ClipboardEvent): boolean;
+    handleDrop(event: DragEvent): boolean;
     remove(sessionId: string, occurrence: PasteOccurrence): void;
     private upload;
     private serialize;

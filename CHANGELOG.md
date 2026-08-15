@@ -2,6 +2,12 @@
 
 All notable user-facing changes to DSH Vision Cloud are documented in this file. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic version tags.
 
+## [Unreleased]
+
+### Added
+
+- Dragged images now use the same paste-to-path bridge as clipboard images for confirmed text-only models, so dropping an image into the Web composer no longer sends a native image block that the model cannot accept.
+
 ## [0.1.7] - 2026-08-15
 
 ### Added

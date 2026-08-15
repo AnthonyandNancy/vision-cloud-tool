@@ -1,7 +1,7 @@
 /**
  * DSH Vision Cloud browser plugin: a minimal Settings section (pick an app
- * model + test read) plus the paste-to-path image bridge. No tool cards, no
- * artifact previews, no credentials.
+ * model + test read) plus the paste/drop-to-path image bridge. No tool cards,
+ * no artifact previews, no credentials.
  */
 
 import {
@@ -55,8 +55,8 @@ const en = {
   testOk: 'Test read succeeded.',
   testFailed: 'Test read failed',
   noModel: 'Select a vision model and save before testing.',
-  pasteToPath: 'Paste-to-path bridge',
-  pasteToPathHint: 'Convert pasted images into workspace paths for text-only models. Leave off to keep pastes native.',
+  pasteToPath: 'Paste/drop-to-path bridge',
+  pasteToPathHint: 'Convert pasted or dropped images into workspace paths for text-only models. Leave off to keep image input native.',
   reasoningEffort: 'Thinking effort',
   reasoningDefault: 'Default (model default)',
 } as const
@@ -94,8 +94,8 @@ const zh: Record<LocaleKey, string> = {
   testOk: '测试读取成功。',
   testFailed: '测试读取失败',
   noModel: '请先选择视觉模型并保存，再测试读取。',
-  pasteToPath: '粘贴路径桥',
-  pasteToPathHint: '把粘贴的图片转换为工作区路径（供纯文本模型使用）。关闭则粘贴保持原生附件。',
+  pasteToPath: '粘贴/拖拽路径桥',
+  pasteToPathHint: '把粘贴或拖拽的图片转换为工作区路径（供纯文本模型使用）。关闭则图片输入保持原生附件。',
   reasoningEffort: '思考程度',
   reasoningDefault: '默认（模型默认）',
 }
