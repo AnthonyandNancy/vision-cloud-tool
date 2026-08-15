@@ -1,7 +1,7 @@
 /**
  * modlens vision prompt: instructs a vision-capable model to return one JSON
  * object matching the modlens v2 schema. Ported from liustack/modlens (MIT).
- * @module dsh-vision-toolkit/vision-prompt
+ * @module dsh-vision-cloud/vision-prompt
  */
 
 export const JSON_TEMPLATE_INSTRUCTION = `Respond with ONE JSON object only, no markdown fences, no commentary. Fill this exact structure with your findings from the image (do not repeat this template literally, replace every value):

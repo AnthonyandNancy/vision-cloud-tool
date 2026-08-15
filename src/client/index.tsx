@@ -1,5 +1,5 @@
 /**
- * DSH Vision Toolkit browser plugin: a minimal Settings section (pick an app
+ * DSH Vision Cloud browser plugin: a minimal Settings section (pick an app
  * model + test read) plus the paste-to-path image bridge. No tool cards, no
  * artifact previews, no credentials.
  */
@@ -21,12 +21,12 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { installPasteImages } from './paste-images.tsx'
 
-const NS = 'vision-toolkit'
-const SETTINGS_ROUTE = '/_dsh/vision-toolkit/settings'
+const NS = 'vision-cloud'
+const SETTINGS_ROUTE = '/_dsh/vision-cloud/settings'
 
 const en = {
   nav: 'Vision',
-  settingsTitle: 'Vision Toolkit',
+  settingsTitle: 'Vision Cloud',
   settingsIntro: 'Pick a model configured in DSH so vision_cloud_tool can read images through it.',
   model: 'Vision model',
   modelHint: 'Leave "Off" to keep vision_cloud_tool unregistered. Selecting a model registers the tool immediately.',
@@ -61,7 +61,7 @@ type LocaleKey = keyof typeof en
 
 const zh: Record<LocaleKey, string> = {
   nav: '视觉',
-  settingsTitle: '视觉工具箱',
+  settingsTitle: '视觉云',
   settingsIntro: '选择一个 DSH 应用内已配置的模型，让 vision_cloud_tool 通过它读取图片。',
   model: '视觉模型',
   modelHint: '保持“不开启”则不会注册 vision_cloud_tool；选择模型后立即生效。',
@@ -96,7 +96,7 @@ type Translate = (key: LocaleKey, params?: Record<string, unknown>) => string
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
-    'vision-toolkit': LocaleKey
+    'vision-cloud': LocaleKey
   }
 }
 
@@ -140,7 +140,7 @@ async function apiRequest<T>(init?: RequestInit): Promise<T> {
   const body = await response.json() as ApiSuccess<T> | ApiFailure
   if (!response.ok || !body.ok) {
     const failure = body as ApiFailure
-    throw new Error(failure.error?.message ?? `Vision Toolkit request failed with HTTP ${response.status}`)
+    throw new Error(failure.error?.message ?? `Vision Cloud request failed with HTTP ${response.status}`)
   }
   return body.value
 }
@@ -396,11 +396,11 @@ const CSS = `
 `
 
 function installStyles(): () => void {
-  const id = '@anionex/dsh-vision-toolkit/client'
+  const id = '@anionex/dsh-vision-cloud/client'
   const existing = document.querySelector<HTMLStyleElement>(`style[data-plugin-css="${id}"]`)
   if (existing !== null) return () => {}
   const style = document.createElement('style')
-  style.dataset.plugin = '@anionex/dsh-vision-toolkit'
+  style.dataset.plugin = '@anionex/dsh-vision-cloud'
   style.dataset.pluginCss = id
   style.textContent = CSS
   document.head.appendChild(style)
@@ -412,8 +412,8 @@ export const inject = ['slots', 'locale', 'remote', 'conversation', 'sessions']
 
 /** Register the Vision Settings section and the paste-to-path bridge. */
 export function apply(ctx: ClientContext): void {
-  ctx.effect(installStyles, 'dsh-vision-toolkit: styles')
-  ctx.effect(() => ctx.locale.register(NS, { en, zh }), 'dsh-vision-toolkit: locale')
+  ctx.effect(installStyles, 'dsh-vision-cloud: styles')
+  ctx.effect(() => ctx.locale.register(NS, { en, zh }), 'dsh-vision-cloud: locale')
   installPasteImages(ctx)
   const t = ctx.locale.bind(NS)
   const controller = new VisionSettingsController()
@@ -430,10 +430,10 @@ export function apply(ctx: ClientContext): void {
       : [currentEvents.on('settings/changed', refresh)]
     disposers.push(ctx.on('connection/reset', refresh))
     return () => { for (const dispose of disposers) dispose() }
-  }, 'dsh-vision-toolkit: Settings invalidations')
+  }, 'dsh-vision-cloud: Settings invalidations')
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
-    id: 'vision-toolkit',
+    id: 'vision-cloud',
     order: 30,
     label: () => t('nav'),
     inject: () => ({ controller, t }),

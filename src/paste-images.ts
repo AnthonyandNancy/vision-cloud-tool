@@ -9,7 +9,7 @@ import type {} from '@deepseek-ai/dsh-session'
 import { sameOriginPost } from './web-request.ts'
 
 /** Exact route used by the browser paste integration. */
-export const PASTE_IMAGES_ROUTE = '/_dsh/vision-toolkit/paste-images'
+export const PASTE_IMAGES_ROUTE = '/_dsh/vision-cloud/paste-images'
 
 const MAX_NAME_BYTES = 180
 
@@ -137,7 +137,7 @@ async function sessionPasteRoot(ctx: Context, sessionId: string): Promise<PasteR
 
   const visibleWorkspace = resolve(cwd)
   const workspace = await realpath(visibleWorkspace)
-  const pluginRoot = join(visibleWorkspace, '.dsh-vision-toolkit')
+  const pluginRoot = join(visibleWorkspace, '.dsh-vision-cloud')
   await ensureManagedDirectory(workspace, pluginRoot)
   const temporaryRoot = join(pluginRoot, 'tmp')
   await ensureManagedDirectory(workspace, temporaryRoot)
@@ -227,7 +227,7 @@ export class PastedImageBackend {
       responseJson(res, 201, { ok: true, value: { absolutePath, filename, bytes: size } })
     } catch (error) {
       const status = error instanceof RangeError ? 413 : 400
-      this.ctx.logger.warn('dsh-vision-toolkit pasted image rejected: %s', message(error))
+      this.ctx.logger.warn('dsh-vision-cloud pasted image rejected: %s', message(error))
       requestError(res, status, 'paste-image-rejected', message(error))
     }
   }

@@ -3,7 +3,7 @@
  * out. Resolves image bytes (path or URL), enforces byte/pixel limits through a
  * pure-JS header parser, stores images via the DSH attachment service, and
  * reads them with the DSH app's configured model through `ctx.llm.stream`.
- * @module dsh-vision-toolkit/runtime
+ * @module dsh-vision-cloud/runtime
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { ResolvedVisionToolkitConfig } from './config.ts';

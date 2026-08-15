@@ -6,8 +6,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 
-const SOURCE = 'vision-toolkit-pasted-image'
-export const PASTE_IMAGES_ROUTE = '/_dsh/vision-toolkit/paste-images'
+const SOURCE = 'vision-cloud-pasted-image'
+export const PASTE_IMAGES_ROUTE = '/_dsh/vision-cloud/paste-images'
 const MAX_IMAGES = 20
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_BATCH_BYTES = 80 * 1024 * 1024
@@ -401,7 +401,7 @@ export function installPasteImages(ctx: ClientContext): void {
         registered.delete(identity)
         registration.dispose()
       }
-    }, 'dsh-vision-toolkit: pasted image reference codec')
+    }, 'dsh-vision-cloud: pasted image reference codec')
   }
   ctx.inject(['slash'], (scope: ClientContext) => {
     register(scope, (scope as unknown as LegacySlashContext).slash)
@@ -413,10 +413,10 @@ export function installPasteImages(ctx: ClientContext): void {
     const listener = (event: ClipboardEvent): void => { controller.handlePaste(event) }
     document.addEventListener('paste', listener, true)
     return () => { document.removeEventListener('paste', listener, true) }
-  }, 'dsh-vision-toolkit: clipboard image capture')
+  }, 'dsh-vision-cloud: clipboard image capture')
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock',
-    id: 'vision-toolkit-pasted-images',
+    id: 'vision-cloud-pasted-images',
     order: 6,
     inject: sessionId => ({
       controller,

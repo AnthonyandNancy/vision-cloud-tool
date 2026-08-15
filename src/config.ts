@@ -2,7 +2,7 @@
  * Plugin configuration: an optional app-model selection, output language, and
  * limits. There are no secrets and no provider endpoints here — the DSH app
  * owns the configured model's URL and key.
- * @module dsh-vision-toolkit/config
+ * @module dsh-vision-cloud/config
  */
 
 import z from '@deepseek-ai/schemastery'
@@ -11,7 +11,7 @@ import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { VisionToolkitError } from './errors.ts'
 
 /** Settings document namespace owned by this plugin. */
-export const VISION_TOOLKIT_SETTINGS_NAMESPACE = settingsNamespace('vision-toolkit')
+export const VISION_TOOLKIT_SETTINGS_NAMESPACE = settingsNamespace('vision-cloud')
 
 /** Full user-facing configuration; every limit defaults at the schema boundary. */
 export interface VisionToolkitConfig {
