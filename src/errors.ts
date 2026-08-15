@@ -1,6 +1,6 @@
 /**
  * Stable error vocabulary shared by the runtime and tools.
- * @module dsh-vision-cloud/errors
+ * @module dsh-vision-toolkit/errors
  */
 
 /** Discriminant tag for every Vision Cloud failure. */

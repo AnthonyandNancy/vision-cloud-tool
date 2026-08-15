@@ -1,5 +1,5 @@
 {
-  "name": "@anionex/dsh-vision-cloud",
+  "name": "@anionex/dsh-vision-toolkit",
   "version": "0.1.7",
   "description": "DeepSeek Harness-native online vision tool: read images through the app's configured model with modlens v2 structured output.",
   "keywords": [
@@ -13,10 +13,10 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Anionex/dsh-vision-cloud.git"
+    "url": "git+https://github.com/Anionex/dsh-vision-toolkit.git"
   },
   "bugs": {
-    "url": "https://github.com/Anionex/dsh-vision-cloud/issues"
+    "url": "https://github.com/Anionex/dsh-vision-toolkit/issues"
   },
   "homepage": "https://agent-vision.anionex.me",
   "funding": "https://ifdian.net/a/anionex",

@@ -100,7 +100,7 @@ const config = {
 }
 
 const runtime = new VisionToolkitRuntime(ctx, config)
-const result = await runtime.read([IMAGE], PROMPT, {
+const result = await runtime.read({ images: [IMAGE], attachments: [] }, PROMPT, {
   signal: new AbortController().signal,
   workspace: process.cwd(),
 })

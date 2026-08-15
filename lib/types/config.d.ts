@@ -2,7 +2,7 @@
  * Plugin configuration: an optional app-model selection, output language, and
  * limits. There are no secrets and no provider endpoints here — the DSH app
  * owns the configured model's URL and key.
- * @module dsh-vision-cloud/config
+ * @module dsh-vision-toolkit/config
  */
 import type Schema from '@deepseek-ai/schemastery';
 /** Settings document namespace owned by this plugin. */

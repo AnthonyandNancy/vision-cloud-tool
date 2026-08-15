@@ -2,7 +2,7 @@
  * Pure-JS image header parsing for PNG/JPEG/GIF/WebP: magic bytes, intrinsic
  * encoded dimensions, and canonical format. Replaces Pillow probing — no full
  * decode, so no Python and no native dependencies.
- * @module dsh-vision-cloud/image-header
+ * @module dsh-vision-toolkit/image-header
  */
 
 export type ImageFormat = 'png' | 'jpeg' | 'gif' | 'webp'

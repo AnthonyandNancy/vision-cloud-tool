@@ -1,6 +1,6 @@
 /**
  * Stable error vocabulary shared by the runtime and tools.
- * @module dsh-vision-cloud/errors
+ * @module dsh-vision-toolkit/errors
  */
 /** Discriminant tag for every Vision Cloud failure. */
 export declare const VISION_TOOLKIT_ERROR_CODES: readonly ["config", "input", "capacity", "service", "runtime", "output", "timeout", "cancelled", "path"];

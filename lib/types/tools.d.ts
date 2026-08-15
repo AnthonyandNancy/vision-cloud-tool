@@ -3,7 +3,7 @@
  * the DSH tool registry (no skill, no progressive exposure) exactly like the
  * modlens reference plugin. Output is the modlens v2 structured evidence plus
  * per-image and routing facts.
- * @module dsh-vision-cloud/tools
+ * @module dsh-vision-toolkit/tools
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { VisionToolkitRuntime } from './runtime.ts';

@@ -1,16 +1,17 @@
 /**
  * Online vision runtime: structured requests in, modlens v2 structured results
- * out. Resolves image bytes (path or URL), enforces byte/pixel limits through a
- * pure-JS header parser, stores images via the DSH attachment service, and
- * reads them with the DSH app's configured model through `ctx.llm.stream`.
- * @module dsh-vision-cloud/runtime
+ * out. Resolves image bytes from a workspace path, an http(s) URL, or a pasted
+ * image attachment; enforces byte/pixel limits through a pure-JS header parser;
+ * stores/reads images via the DSH attachment service; and reads them with the
+ * DSH app's configured model through `ctx.llm.stream`.
+ * @module dsh-vision-toolkit/runtime
  */
 
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { createUserMessage, type ContentBlock, type StreamChunk } from '@deepseek-ai/dsh-llm'
-import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { ResolvedVisionToolkitConfig } from './config.ts'
 import { VisionToolkitError } from './errors.ts'
 import { readImageHeader, sniffFormat, type ImageFormat } from './image-header.ts'
@@ -27,6 +28,11 @@ export interface ImageInfo {
   format: string
 }
 
+/** Minimal live-Session surface used to resolve pasted image attachments. */
+export interface VisionSession {
+  events?: readonly unknown[]
+}
+
 /** Shared per-call execution options. */
 export interface ToolCallOptions {
   signal: AbortSignal
@@ -34,6 +40,8 @@ export interface ToolCallOptions {
   workspace: string
   /** Session identity for the per-session concurrency cap. */
   sessionId?: string
+  /** Live Session whose message history carries pasted image attachments. */
+  session?: VisionSession
 }
 
 /** Per-call routing and accounting facts. */
@@ -49,6 +57,12 @@ export interface VisionCloudResult {
   images: ImageInfo[]
   result: VisionResult
   meta: VisionMeta
+}
+
+/** Tool input: any mix of paths/URLs and pasted attachment ids. */
+export interface VisionCloudRequest {
+  images: string[]
+  attachments: string[]
 }
 
 const FORMAT_MEDIA_TYPE: Record<ImageFormat, ImageMediaType> = {
@@ -69,9 +83,9 @@ const MAX_TIMEOUT_MS = 600_000
 const MAX_ATTEMPTS = 2
 const MAX_URL_BYTES = 25 * 1024 * 1024
 
-/** A 1x1 transparent PNG used by the Settings self-test read. */
-const TINY_PNG = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+/** A tiny 4x4 RGB PNG used by the Settings self-test read (sharp-decodable). */
+const SELF_TEST_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAEElEQVQImWOoCDgBRwzEcQCFUhkBi7FWdgAAAABJRU5ErkJggg==',
   'base64',
 )
 
@@ -131,7 +145,7 @@ export class Semaphore {
   }
 
   async acquire(signal: AbortSignal): Promise<void> {
-    if (signal.aborted) throw new VisionToolkitError('cancelled', 'vision-cloud: cancelled before execution')
+    if (signal.aborted) throw new VisionToolkitError('cancelled', 'vision-toolkit: cancelled before execution')
     if (this.waiters.length === 0 && this.active < this.limit) {
       this.active += 1
       return
@@ -146,7 +160,7 @@ export class Semaphore {
       entry.onAbort = (): void => {
         const index = this.waiters.indexOf(entry)
         if (index >= 0) this.waiters.splice(index, 1)
-        reject(new VisionToolkitError('cancelled', 'vision-cloud: cancelled while waiting for a concurrency slot'))
+        reject(new VisionToolkitError('cancelled', 'vision-toolkit: cancelled while waiting for a concurrency slot'))
       }
       this.waiters.push(entry)
       signal.addEventListener('abort', entry.onAbort, { once: true })
@@ -207,6 +221,30 @@ async function resolveImageBytes(
   const resolved = await resolveInputFile(raw, policy)
   const data = await readFile(resolved.path)
   return { data: new Uint8Array(data), source: resolved.path, name: basename(resolved.path) }
+}
+
+function normalizeAttachmentId(value: string): string {
+  return value.replace(/^sha256:/u, '').trim()
+}
+
+/** Find a pasted image attachment's full reference in the session history. */
+function findImageRef(session: VisionSession | undefined, attachmentId: string): ImageAttachmentRef | undefined {
+  if (session === undefined || !Array.isArray(session.events)) return undefined
+  const wanted = normalizeAttachmentId(attachmentId)
+  for (const event of session.events) {
+    if (typeof event !== 'object' || event === null) continue
+    const content = (event as { data?: { content?: unknown } }).data?.content
+    if (!Array.isArray(content)) continue
+    for (const block of content) {
+      if (typeof block !== 'object' || block === null) continue
+      const candidate = block as { type?: string; attachment?: ImageAttachmentRef }
+      if (candidate.type !== 'image' || candidate.attachment === undefined) continue
+      if (normalizeAttachmentId(String(candidate.attachment.attachmentId)) === wanted) {
+        return candidate.attachment
+      }
+    }
+  }
+  return undefined
 }
 
 function parseVisionJson(text: string): unknown {
@@ -299,6 +337,23 @@ export class VisionToolkitRuntime {
     }
   }
 
+  private async resolveAttachmentBytes(
+    session: VisionSession | undefined,
+    raw: string,
+    signal: AbortSignal,
+  ): Promise<ResolvedImageBytes> {
+    const ref = findImageRef(session, raw)
+    if (ref === undefined) {
+      throw new VisionToolkitError('input', `image attachment not found in the session: ${raw}`)
+    }
+    const stored = await this.ctx.attachments.readImage(ref, signal)
+    return {
+      data: stored.data,
+      source: `attachment:${String(ref.attachmentId)}`,
+      name: ref.name ?? 'attachment',
+    }
+  }
+
   private async readBytes(
     sources: readonly ResolvedImageBytes[],
     prompt: string | undefined,
@@ -359,7 +414,7 @@ export class VisionToolkitRuntime {
       throw new VisionToolkitError('config', 'vision_cloud_tool is not enabled; select a vision model in Settings')
     }
     const messages = [createUserMessage({
-      source: { kind: 'plugin', plugin: '@anionex/dsh-vision-cloud' },
+      source: { kind: 'plugin', plugin: '@anionex/dsh-vision-toolkit' },
       content: [
         ...content,
         { type: 'text', text: buildVisionPrompt({
@@ -387,20 +442,25 @@ export class VisionToolkitRuntime {
     throw new VisionToolkitError('output', 'vision model did not return a schema-valid result')
   }
 
-  /** Read one or more images through the app's configured model. */
-  async read(images: readonly string[], prompt: string | undefined, options: ToolCallOptions): Promise<VisionCloudResult> {
+  /** Read one or more images (paths/URLs/attachments) through the app model. */
+  async read(request: VisionCloudRequest, prompt: string | undefined, options: ToolCallOptions): Promise<VisionCloudResult> {
     return this.run(options, async (signal) => {
-      if (images.length === 0) throw new VisionToolkitError('input', 'vision_cloud_tool requires at least one image')
-      if (images.length > this.config.maxImages) {
+      const images = request.images ?? []
+      const attachments = request.attachments ?? []
+      const total = images.length + attachments.length
+      if (total === 0) throw new VisionToolkitError('input', 'vision_cloud_tool requires at least one image or attachment')
+      if (total > this.config.maxImages) {
         throw new VisionToolkitError('input', `vision_cloud_tool accepts at most ${this.config.maxImages} images`)
       }
       const policy = await createPathPolicy(options.workspace, this.config.allowedDirs)
       const started = Date.now()
       const warnings: string[] = []
-      const sources = await Promise.all(images.map(raw => resolveImageBytes(raw, policy, signal)))
+      const pathSources = await Promise.all(images.map(raw => resolveImageBytes(raw, policy, signal)))
+      const attachmentSources = await Promise.all(attachments.map(raw => this.resolveAttachmentBytes(options.session, raw, signal)))
+      const sources = [...pathSources, ...attachmentSources]
       const { images: resolved, result } = await this.readBytes(sources, prompt, signal, warnings)
       this.ctx.logger.info(
-        'dsh-vision-cloud tool=%s outcome=ok totalMs=%d images=%d model=%s',
+        'dsh-vision-toolkit tool=%s outcome=ok totalMs=%d images=%d model=%s',
         'vision_cloud_tool',
         Date.now() - started,
         resolved.length,
@@ -424,7 +484,7 @@ export class VisionToolkitRuntime {
     return this.run(options, async (signal) => {
       const warnings: string[] = []
       const sources: ResolvedImageBytes[] = [{
-        data: new Uint8Array(TINY_PNG),
+        data: new Uint8Array(SELF_TEST_PNG),
         source: 'settings-self-test.png',
         name: 'self-test.png',
       }]

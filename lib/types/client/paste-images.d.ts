@@ -3,7 +3,7 @@ import { type ReactNode } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client';
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots';
-export declare const PASTE_IMAGES_ROUTE = "/_dsh/vision-cloud/paste-images";
+export declare const PASTE_IMAGES_ROUTE = "/_dsh/vision-toolkit/paste-images";
 interface PasteRecord {
     ref: string;
     file: File;

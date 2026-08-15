@@ -1,9 +1,10 @@
 /**
  * Online vision runtime: structured requests in, modlens v2 structured results
- * out. Resolves image bytes (path or URL), enforces byte/pixel limits through a
- * pure-JS header parser, stores images via the DSH attachment service, and
- * reads them with the DSH app's configured model through `ctx.llm.stream`.
- * @module dsh-vision-cloud/runtime
+ * out. Resolves image bytes from a workspace path, an http(s) URL, or a pasted
+ * image attachment; enforces byte/pixel limits through a pure-JS header parser;
+ * stores/reads images via the DSH attachment service; and reads them with the
+ * DSH app's configured model through `ctx.llm.stream`.
+ * @module dsh-vision-toolkit/runtime
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { ResolvedVisionToolkitConfig } from './config.ts';
@@ -16,6 +17,10 @@ export interface ImageInfo {
     height: number;
     format: string;
 }
+/** Minimal live-Session surface used to resolve pasted image attachments. */
+export interface VisionSession {
+    events?: readonly unknown[];
+}
 /** Shared per-call execution options. */
 export interface ToolCallOptions {
     signal: AbortSignal;
@@ -23,6 +28,8 @@ export interface ToolCallOptions {
     workspace: string;
     /** Session identity for the per-session concurrency cap. */
     sessionId?: string;
+    /** Live Session whose message history carries pasted image attachments. */
+    session?: VisionSession;
 }
 /** Per-call routing and accounting facts. */
 export interface VisionMeta {
@@ -36,6 +43,11 @@ export interface VisionCloudResult {
     images: ImageInfo[];
     result: VisionResult;
     meta: VisionMeta;
+}
+/** Tool input: any mix of paths/URLs and pasted attachment ids. */
+export interface VisionCloudRequest {
+    images: string[];
+    attachments: string[];
 }
 /** Per-invocation cancellation and timeout facts. */
 export interface Deadline {
@@ -70,10 +82,11 @@ export declare class VisionToolkitRuntime {
     private timeout;
     private semaphore;
     private run;
+    private resolveAttachmentBytes;
     private readBytes;
     private streamRead;
-    /** Read one or more images through the app's configured model. */
-    read(images: readonly string[], prompt: string | undefined, options: ToolCallOptions): Promise<VisionCloudResult>;
+    /** Read one or more images (paths/URLs/attachments) through the app model. */
+    read(request: VisionCloudRequest, prompt: string | undefined, options: ToolCallOptions): Promise<VisionCloudResult>;
     /** One tiny real read used by the Settings "test read" action. */
     selfTest(options: ToolCallOptions): Promise<VisionCloudResult>;
 }

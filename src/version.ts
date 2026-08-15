@@ -1,6 +1,6 @@
 /**
  * Plugin package version.
- * @module dsh-vision-cloud/version
+ * @module dsh-vision-toolkit/version
  */
 
 import { readFileSync } from 'node:fs'

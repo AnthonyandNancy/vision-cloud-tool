@@ -1,7 +1,7 @@
 /**
  * Path fence for inputs: files must live in the workspace or an explicitly
  * authorized directory, resolved through realpath so symlinks cannot escape.
- * @module dsh-vision-cloud/paths
+ * @module dsh-vision-toolkit/paths
  */
 /** Supported input image extensions. */
 export declare const SUPPORTED_IMAGE_EXTENSIONS: readonly [".png", ".jpg", ".jpeg", ".gif", ".webp"];

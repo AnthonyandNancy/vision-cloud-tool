@@ -39,7 +39,7 @@ declare const en: {
 type LocaleKey = keyof typeof en;
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap {
-        'vision-cloud': LocaleKey;
+        'vision-toolkit': LocaleKey;
     }
 }
 interface SettingsValue {
