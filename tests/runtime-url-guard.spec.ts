@@ -5,8 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveConfig } from '../src/config.ts'
 import { VisionToolkitRuntime } from '../src/runtime.ts'
 
-const config = resolveConfig({ model: { provider: 'test-provider', model: 'test-vision' } })
-
 let workspace: string
 
 beforeEach(async () => {
@@ -18,8 +16,11 @@ afterEach(async () => {
   await rm(workspace, { recursive: true, force: true })
 })
 
-function runtime(): VisionToolkitRuntime {
-  return new VisionToolkitRuntime({} as never, config)
+function runtime(allowExtensionlessImageUrls = false): VisionToolkitRuntime {
+  return new VisionToolkitRuntime({} as never, resolveConfig({
+    model: { provider: 'test-provider', model: 'test-vision' },
+    allowExtensionlessImageUrls,
+  }))
 }
 
 function options(): { signal: AbortSignal; workspace: string } {
@@ -40,7 +41,20 @@ describe('vision_cloud_tool URL media guard', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('rejects a JSON API endpoint by content-type without reading its body', async () => {
+  it('rejects an extensionless API URL before any network request by default', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(runtime().read(
+      { images: ['https://new-api.abrdns.com/?api_key=sk-test'], attachments: [] },
+      undefined,
+      options(),
+    )).rejects.toMatchObject({ code: 'input' })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('rejects a JSON API endpoint by content-type without reading its body when extensionless URLs are enabled', async () => {
     let bodyRead = false
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -54,7 +68,7 @@ describe('vision_cloud_tool URL media guard', () => {
       headers: { 'content-type': 'application/json' },
     })))
 
-    await expect(runtime().read(
+    await expect(runtime(true).read(
       { images: ['https://new-api.abrdns.com/v1/models'], attachments: [] },
       undefined,
       options(),
@@ -90,7 +104,7 @@ describe('vision_cloud_tool URL media guard', () => {
       headers: { 'content-type': 'video/mp4' },
     })))
 
-    await expect(runtime().read(
+    await expect(runtime(true).read(
       { images: ['https://example.com/media/signed-stream'], attachments: [] },
       undefined,
       options(),
@@ -126,7 +140,7 @@ describe('vision_cloud_tool URL media guard', () => {
       headers: { 'content-type': 'image/svg+xml' },
     })))
 
-    await expect(runtime().read(
+    await expect(runtime(true).read(
       { images: ['https://example.com/vector.svg'], attachments: [] },
       undefined,
       options(),

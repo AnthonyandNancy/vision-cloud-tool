@@ -199,25 +199,30 @@ function mediaTypeOf(response: Response): string | undefined {
 }
 
 /**
- * Reject obviously non-image URLs before any network I/O. A URL whose path
- * carries a non-image extension can never be an image; extensionless URLs are
- * allowed through because signed CDN URLs often omit extensions, and the
- * response Content-Type/magic-bytes checks below still guard them.
+ * Reject non-image URL shapes before any network I/O. By default the URL
+ * pathname must end in a supported image extension so arbitrary links (bare
+ * domains, API paths, HTML pages) are never fetched. Set
+ * `allowExtensionlessImageUrls` only for signed/dynamic CDN image endpoints;
+ * even then Content-Type and magic-bytes checks below still apply.
  */
-function assertImageUrlShape(url: string): void {
+function assertImageUrlShape(url: string, allowExtensionlessImageUrls: boolean): void {
   let pathname: string
   try {
     pathname = new URL(url).pathname
   } catch {
-    return
+    if (allowExtensionlessImageUrls) return
+    throw new VisionToolkitError('input', `invalid image URL: ${url}`)
   }
   const extension = extname(pathname).toLowerCase()
-  if (extension !== '' && !SUPPORTED_IMAGE_EXTENSION_SET.has(extension)) {
-    throw new VisionToolkitError(
-      'input',
-      `URL does not point to a supported image format ("${extension}"); supported: ${[...SUPPORTED_IMAGE_EXTENSION_SET].join(', ')}: ${url}`,
-    )
-  }
+  if (SUPPORTED_IMAGE_EXTENSION_SET.has(extension)) return
+  if (allowExtensionlessImageUrls) return
+  const reason = extension === '' ? 'has no image file extension' : `ends with "${extension}"`
+  throw new VisionToolkitError(
+    'input',
+    `image URL ${reason}; vision_cloud_tool only fetches direct image URLs ending in ${[...SUPPORTED_IMAGE_EXTENSION_SET].join(', ')}. `
+      + 'Pass a downloaded workspace image file instead, or set allowExtensionlessImageUrls: true in the vision-cloud Settings for CDN endpoints without extensions. '
+      + `Offending URL: ${url}`,
+  )
 }
 
 /**
@@ -266,8 +271,8 @@ async function readResponseBytes(response: Response): Promise<Uint8Array> {
   return new Uint8Array(Buffer.concat(chunks, total))
 }
 
-async function fetchUrlBytes(url: string, signal: AbortSignal): Promise<ResolvedImageBytes> {
-  assertImageUrlShape(url)
+async function fetchUrlBytes(url: string, signal: AbortSignal, allowExtensionlessImageUrls: boolean): Promise<ResolvedImageBytes> {
+  assertImageUrlShape(url, allowExtensionlessImageUrls)
   const controller = new AbortController()
   const onAbort = (): void => { controller.abort() }
   signal.addEventListener('abort', onAbort, { once: true })
@@ -306,12 +311,13 @@ async function resolveImageBytes(
   raw: string,
   policy: PathPolicy,
   signal: AbortSignal,
+  allowExtensionlessImageUrls: boolean,
 ): Promise<ResolvedImageBytes> {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
     if (!/^https?:\/\//i.test(raw)) {
       throw new VisionToolkitError('input', `only http(s) image URLs are supported: ${raw}`)
     }
-    return fetchUrlBytes(raw, signal)
+    return fetchUrlBytes(raw, signal, allowExtensionlessImageUrls)
   }
   const resolved = await resolveInputFile(raw, policy)
   const data = await readFile(resolved.path)
@@ -361,6 +367,15 @@ function parseVisionJson(text: string): unknown {
   throw new VisionToolkitError('output', 'vision model did not return a single JSON object')
 }
 
+const MAX_FAILURE_MESSAGE_LENGTH = 400
+
+function summarizeFailureMessage(raw: string): string {
+  const normalized = raw.replace(/\s+/gu, ' ').trim()
+  return normalized.length <= MAX_FAILURE_MESSAGE_LENGTH
+    ? normalized
+    : `${normalized.slice(0, MAX_FAILURE_MESSAGE_LENGTH)}…`
+}
+
 function collectText(stream: AsyncIterable<StreamChunk>): Promise<string> {
   return (async () => {
     let text = ''
@@ -369,7 +384,12 @@ function collectText(stream: AsyncIterable<StreamChunk>): Promise<string> {
         text += chunk.text
       } else if (chunk.type === 'finish') {
         if (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted') {
-          throw new VisionToolkitError('service', chunk.reason.failure.message)
+          const { failure } = chunk.reason
+          const status = failure.status === undefined ? '' : ` (HTTP ${failure.status})`
+          throw new VisionToolkitError(
+            'service',
+            `vision model request failed${status} [${failure.code}]: ${summarizeFailureMessage(failure.message)}`,
+          )
         }
       }
     }
@@ -551,7 +571,7 @@ export class VisionToolkitRuntime {
       const policy = await createPathPolicy(options.workspace, this.config.allowedDirs)
       const started = Date.now()
       const warnings: string[] = []
-      const pathSources = await Promise.all(images.map(raw => resolveImageBytes(raw, policy, signal)))
+      const pathSources = await Promise.all(images.map(raw => resolveImageBytes(raw, policy, signal, this.config.allowExtensionlessImageUrls)))
       const attachmentSources = await Promise.all(attachments.map(raw => this.resolveAttachmentBytes(options.session, raw, signal)))
       const sources = [...pathSources, ...attachmentSources]
       const { images: resolved, result } = await this.readBytes(sources, prompt, signal, warnings)

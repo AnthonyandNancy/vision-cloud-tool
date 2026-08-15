@@ -30,6 +30,13 @@ export interface VisionToolkitConfig {
     maxImages?: number;
     /** Extra directories (besides the workspace) inputs may come from. */
     allowedDirs?: string[];
+    /**
+     * Allow http(s) image URLs whose path has no image extension (e.g. signed
+     * CDN URLs). Off by default so arbitrary API/web URLs are rejected before
+     * any network request; even when enabled, Content-Type and magic bytes are
+     * still enforced.
+     */
+    allowExtensionlessImageUrls?: boolean;
     /** Paste-to-path bridge: convert pasted images to workspace paths for text-only models. */
     pasteToPath?: boolean;
 }
@@ -49,6 +56,7 @@ export interface ResolvedVisionToolkitConfig {
     concurrency: number;
     maxImages: number;
     allowedDirs: string[];
+    allowExtensionlessImageUrls: boolean;
     pasteToPath: boolean;
 }
 /**

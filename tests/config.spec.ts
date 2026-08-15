@@ -12,6 +12,7 @@ describe('config', () => {
     expect(config.concurrency).toBe(4)
     expect(config.maxImages).toBe(8)
     expect(config.allowedDirs).toEqual([])
+    expect(config.allowExtensionlessImageUrls).toBe(false)
   })
 
   it('keeps an absent model off', () => {

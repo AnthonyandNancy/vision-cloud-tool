@@ -35,7 +35,7 @@ flowchart LR
 
 ```
 vision_cloud_tool
-  images: string[]   # 1..8；工作区图片路径和/或直接指向 PNG/JPEG/GIF/WebP 图片的 http(s) 地址
+  images: string[]   # 1..8；工作区图片路径和/或以 .png/.jpg/.jpeg/.gif/.webp 结尾的 http(s) 地址
   prompt?: string    # 可选：关注点 / 问题 / 对比指令
 ```
 
@@ -48,7 +48,7 @@ vision_cloud_tool
 | 同时对比两张图 | `images=["a.png","b.png"], prompt="对比这两张图"` |
 | 网络图片 | `images=["https://…/x.png"]` |
 
-只接受真实的 PNG/JPEG/GIF/WebP 图片输入。视频、音频、文档以及非图片 URL（例如 API 地址或 HTML/JSON 页面）会在下载内容前被拒绝。
+只接受真实的 PNG/JPEG/GIF/WebP 图片输入。视频、音频、文档以及非图片 URL（例如 API 地址或 HTML/JSON 页面）会在下载内容前被拒绝。默认情况下 http(s) 地址必须以支持的图片扩展名结尾，因此任意链接不会被真正请求；无扩展名的签名/动态 CDN 图片地址需要开启 `allowExtensionlessImageUrls: true`。
 
 ## 输出规范（modlens v2）
 
@@ -81,6 +81,7 @@ vision_cloud_tool
     concurrency: 4
     maxImages: 8
     allowedDirs: []
+    allowExtensionlessImageUrls: false
 ```
 
 ## Web 设置

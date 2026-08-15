@@ -196,9 +196,15 @@ export class VisionToolkitWebBackend {
 
   private async save(request: SaveRequest): Promise<VisionToolkitSettingsSnapshot> {
     if (!this.ctx.settings.writable) throw new Error('settings provider is read-only')
+    const current = descriptorOf(this.ctx).value as VisionToolkitConfig
+    const value: VisionToolkitConfig = {
+      ...request.value,
+      // The current Settings UI predates this field; preserve a value set in YAML.
+      allowExtensionlessImageUrls: request.value.allowExtensionlessImageUrls ?? current.allowExtensionlessImageUrls ?? false,
+    }
     await this.ctx.settings.replace(
       VISION_TOOLKIT_SETTINGS_NAMESPACE,
-      request.value as object,
+      value as object,
       request.expectedRevision,
     )
     return this.snapshot()

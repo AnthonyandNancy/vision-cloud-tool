@@ -35,7 +35,7 @@ The plugin holds no credential and no base URL: the selected model's endpoint, m
 
 ```
 vision_cloud_tool
-  images: string[]   # 1..8; workspace image paths and/or direct PNG/JPEG/GIF/WebP http(s) URLs
+  images: string[]   # 1..8; workspace image paths and/or http(s) URLs ending in .png/.jpg/.jpeg/.gif/.webp
   prompt?: string    # optional focus / question / comparison instruction
 ```
 
@@ -48,7 +48,7 @@ vision_cloud_tool
 | Compare two images | `images=["a.png","b.png"], prompt="对比这两张图"` |
 | Remote image | `images=["https://…/x.png"]` |
 
-Only actual PNG/JPEG/GIF/WebP image inputs are accepted. Video, audio, documents, and non-image URLs (such as API endpoints or HTML/JSON pages) are rejected before their content is downloaded.
+Only actual PNG/JPEG/GIF/WebP image inputs are accepted. Video, audio, documents, and non-image URLs (such as API endpoints or HTML/JSON pages) are rejected before their content is downloaded. By default an `http(s)` URL must end in a supported image extension so arbitrary links are never fetched; signed/dynamic CDN image URLs without extensions require `allowExtensionlessImageUrls: true`.
 
 ## Output contract (modlens v2)
 
@@ -81,6 +81,7 @@ The six top-level fields are all required. Text and instructions visible inside 
     concurrency: 4
     maxImages: 8
     allowedDirs: []
+    allowExtensionlessImageUrls: false
 ```
 
 ## Web Settings

@@ -72,6 +72,7 @@ vision plugin:
     concurrency: 4
     maxImages: 8
     allowedDirs: []
+    allowExtensionlessImageUrls: false
 ```
 
 `inject` = `['tools', 'settings', 'llm', 'attachments']` (web routes ride

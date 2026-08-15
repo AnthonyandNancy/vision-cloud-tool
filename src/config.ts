@@ -36,6 +36,13 @@ export interface VisionToolkitConfig {
   maxImages?: number
   /** Extra directories (besides the workspace) inputs may come from. */
   allowedDirs?: string[]
+  /**
+   * Allow http(s) image URLs whose path has no image extension (e.g. signed
+   * CDN URLs). Off by default so arbitrary API/web URLs are rejected before
+   * any network request; even when enabled, Content-Type and magic bytes are
+   * still enforced.
+   */
+  allowExtensionlessImageUrls?: boolean
   /** Paste-to-path bridge: convert pasted images to workspace paths for text-only models. */
   pasteToPath?: boolean
 }
@@ -53,6 +60,7 @@ export const Config: Schema<VisionToolkitConfig> = z.object({
   concurrency: z.number().default(4),
   maxImages: z.number().default(8),
   allowedDirs: z.array(z.string()).default([]),
+  allowExtensionlessImageUrls: z.boolean().default(false),
   pasteToPath: z.boolean().default(true),
 })
 
@@ -66,6 +74,7 @@ export interface ResolvedVisionToolkitConfig {
   concurrency: number
   maxImages: number
   allowedDirs: string[]
+  allowExtensionlessImageUrls: boolean
   pasteToPath: boolean
 }
 
@@ -106,6 +115,7 @@ export function resolveConfig(config: VisionToolkitConfig = {}): ResolvedVisionT
     throw new VisionToolkitError('config', `maxImages must be an integer between 1 and ${MAX_IMAGES}`)
   }
   const allowedDirs = (config.allowedDirs ?? []).map(dir => dir.trim()).filter(dir => dir.length > 0)
+  const allowExtensionlessImageUrls = config.allowExtensionlessImageUrls ?? false
   const pasteToPath = config.pasteToPath ?? true
 
   let model: ResolvedVisionToolkitConfig['model']
@@ -137,6 +147,7 @@ export function resolveConfig(config: VisionToolkitConfig = {}): ResolvedVisionT
     concurrency,
     maxImages,
     allowedDirs,
+    allowExtensionlessImageUrls,
     pasteToPath,
   }
 }
