@@ -16,6 +16,7 @@ export interface VisionModelEntry {
     id: string;
     name: string;
     inputModalities: string[];
+    reasoningEfforts: string[];
 }
 /** One provider route and its advertised models. */
 export interface VisionProviderEntry {

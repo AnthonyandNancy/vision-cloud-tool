@@ -37,6 +37,8 @@ declare const en: {
     readonly noModel: "Select a vision model and save before testing.";
     readonly pasteToPath: "Paste-to-path bridge";
     readonly pasteToPathHint: "Convert pasted images into workspace paths for text-only models. Leave off to keep pastes native.";
+    readonly reasoningEffort: "Thinking effort";
+    readonly reasoningDefault: "Default (model default)";
 };
 type LocaleKey = keyof typeof en;
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -48,6 +50,7 @@ interface SettingsValue {
     model?: {
         provider?: string;
         model?: string;
+        reasoningEffort?: string;
     };
     language?: 'zh' | 'en';
     timeoutMs?: number;
@@ -62,6 +65,7 @@ interface VisionModelEntry {
     id: string;
     name: string;
     inputModalities: string[];
+    reasoningEfforts: string[];
 }
 interface VisionProviderEntry {
     provider: string;

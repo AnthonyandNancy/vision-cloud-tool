@@ -10,7 +10,7 @@
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { createUserMessage, type ContentBlock, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, ReasoningEffortId, type ContentBlock, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { ResolvedVisionToolkitConfig } from './config.ts'
 import { VisionToolkitError } from './errors.ts'
@@ -429,6 +429,7 @@ export class VisionToolkitRuntime {
         model: model.model,
         messages,
         signal,
+        ...(model.reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(model.reasoningEffort) }),
       }))
       const parsed = parseVisionJson(text)
       const missing = missingSchemaFields(parsed)

@@ -13,6 +13,8 @@ export interface VisionToolkitConfig {
     model?: {
         provider?: string;
         model?: string;
+        /** Optional reasoning effort id for this model (empty = model default). */
+        reasoningEffort?: string;
     };
     /** Vision output language (`zh` or `en`). */
     language?: 'zh' | 'en';
@@ -38,6 +40,7 @@ export interface ResolvedVisionToolkitConfig {
     model: {
         provider: string;
         model: string;
+        reasoningEffort?: string;
     } | undefined;
     language: 'zh' | 'en';
     timeoutMs: number;

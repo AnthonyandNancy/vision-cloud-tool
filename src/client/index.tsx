@@ -57,6 +57,8 @@ const en = {
   noModel: 'Select a vision model and save before testing.',
   pasteToPath: 'Paste-to-path bridge',
   pasteToPathHint: 'Convert pasted images into workspace paths for text-only models. Leave off to keep pastes native.',
+  reasoningEffort: 'Thinking effort',
+  reasoningDefault: 'Default (model default)',
 } as const
 
 type LocaleKey = keyof typeof en
@@ -94,6 +96,8 @@ const zh: Record<LocaleKey, string> = {
   noModel: '请先选择视觉模型并保存，再测试读取。',
   pasteToPath: '粘贴路径桥',
   pasteToPathHint: '把粘贴的图片转换为工作区路径（供纯文本模型使用）。关闭则粘贴保持原生附件。',
+  reasoningEffort: '思考程度',
+  reasoningDefault: '默认（模型默认）',
 }
 
 type Translate = (key: LocaleKey, params?: Record<string, unknown>) => string
@@ -105,7 +109,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 interface SettingsValue {
-  model?: { provider?: string; model?: string }
+  model?: { provider?: string; model?: string; reasoningEffort?: string }
   language?: 'zh' | 'en'
   timeoutMs?: number
   maxImageBytes?: number
@@ -120,6 +124,7 @@ interface VisionModelEntry {
   id: string
   name: string
   inputModalities: string[]
+  reasoningEfforts: string[]
 }
 
 interface VisionProviderEntry {
@@ -229,6 +234,7 @@ export class VisionSettingsController {
 interface Draft {
   provider: string
   model: string
+  reasoningEffort: string
   language: 'zh' | 'en'
   timeoutMs: string
   maxImageBytes: string
@@ -243,6 +249,7 @@ function draftOf(value: SettingsValue): Draft {
   return {
     provider: value.model?.provider ?? '',
     model: value.model?.model ?? '',
+    reasoningEffort: value.model?.reasoningEffort ?? '',
     language: value.language ?? 'zh',
     timeoutMs: String(value.timeoutMs ?? 180000),
     maxImageBytes: String(value.maxImageBytes ?? 10485760),
@@ -272,7 +279,11 @@ function valueOf(draft: Draft, t: Translate): SettingsValue {
     pasteToPath: draft.pasteToPath,
   }
   if (draft.provider !== '' && draft.model !== '') {
-    value.model = { provider: draft.provider, model: draft.model }
+    value.model = {
+      provider: draft.provider,
+      model: draft.model,
+      ...(draft.reasoningEffort.trim() === '' ? {} : { reasoningEffort: draft.reasoningEffort.trim() }),
+    }
   }
   return value
 }
@@ -319,6 +330,8 @@ function LoadedSettings({ controller, t }: SettingsInjected) {
   const update = <K extends keyof Draft>(key: K, value: Draft[K]): void => setDraft(current => current === undefined ? current : { ...current, [key]: value })
   const providers = snapshot.providers
   const busy = state.action !== undefined
+  const selectedModel = providers.find(entry => entry.provider === draft.provider)?.models.find(model => model.id === draft.model)
+  const reasoningEfforts = selectedModel?.reasoningEfforts ?? []
   const applyModelSelection = (key: string): void => {
     if (key === '') {
       update('provider', '')
@@ -377,6 +390,20 @@ function LoadedSettings({ controller, t }: SettingsInjected) {
             ))}
           </select>
         </Field>
+        {reasoningEfforts.length > 0 ? (
+          <Field label={t('reasoningEffort')}>
+            <select
+              className="dvt-select"
+              aria-label={t('reasoningEffort')}
+              disabled={busy || draft.model === ''}
+              value={draft.reasoningEffort}
+              onChange={(event) => { update('reasoningEffort', event.target.value) }}
+            >
+              <option value="">{t('reasoningDefault')}</option>
+              {reasoningEfforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
+            </select>
+          </Field>
+        ) : null}
         <label className="dvt-check">
           <input type="checkbox" checked={draft.pasteToPath} disabled={busy} onChange={(event) => { update('pasteToPath', event.target.checked) }} />
           <span>{t('pasteToPath')}</span>

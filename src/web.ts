@@ -28,6 +28,7 @@ export interface VisionModelEntry {
   id: string
   name: string
   inputModalities: string[]
+  reasoningEfforts: string[]
 }
 
 /** One provider route and its advertised models. */
@@ -150,10 +151,21 @@ export class VisionToolkitWebBackend {
     for (const info of this.ctx.llm.listProviders()) {
       let models: VisionModelEntry[] = []
       try {
-        models = (await this.ctx.llm.listModels(info.id)).map(model => ({
-          id: model.id,
-          name: model.name,
-          inputModalities: [...(model.inputModalities ?? [])],
+        const listed = await this.ctx.llm.listModels(info.id)
+        models = await Promise.all(listed.map(async (model) => {
+          let reasoningEfforts: string[] = []
+          try {
+            const resolved = await this.ctx.llm.resolveModelInfo(info.id, model.id)
+            reasoningEfforts = (resolved.reasoning?.efforts ?? []).map(effort => String(effort.id))
+          } catch {
+            reasoningEfforts = []
+          }
+          return {
+            id: model.id,
+            name: model.name,
+            inputModalities: [...(model.inputModalities ?? [])],
+            reasoningEfforts,
+          }
         }))
       } catch {
         models = []

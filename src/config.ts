@@ -19,6 +19,8 @@ export interface VisionToolkitConfig {
   model?: {
     provider?: string
     model?: string
+    /** Optional reasoning effort id for this model (empty = model default). */
+    reasoningEffort?: string
   }
   /** Vision output language (`zh` or `en`). */
   language?: 'zh' | 'en'
@@ -56,7 +58,7 @@ export const Config: Schema<VisionToolkitConfig> = z.object({
 
 /** Configuration after static validation, with every default materialized. */
 export interface ResolvedVisionToolkitConfig {
-  model: { provider: string; model: string } | undefined
+  model: { provider: string; model: string; reasoningEffort?: string } | undefined
   language: 'zh' | 'en'
   timeoutMs: number
   maxImageBytes: number
@@ -117,7 +119,12 @@ export function resolveConfig(config: VisionToolkitConfig = {}): ResolvedVisionT
     } else if (name === undefined || name.length === 0) {
       throw new VisionToolkitError('config', 'model requires both "provider" and "model"')
     } else {
-      model = { provider, model: name }
+      const reasoningEffort = config.model.reasoningEffort?.trim()
+      model = {
+        provider,
+        model: name,
+        ...(reasoningEffort === undefined || reasoningEffort.length === 0 ? {} : { reasoningEffort }),
+      }
     }
   }
 
