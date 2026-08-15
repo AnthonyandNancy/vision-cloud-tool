@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
-import { access, cp, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { access, readFile, readdir, stat } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
 import { dirname, extname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -60,56 +59,6 @@ function pngDimensions(bytes) {
   }
 }
 
-function run(command, args, cwd) {
-  return spawnSync(command, args, { cwd, encoding: 'utf8' })
-}
-
-async function verifyWindowsCheckout() {
-  const temporaryRoot = await mkdtemp(join(tmpdir(), 'dsh-vision-autocrlf-'))
-  const seed = join(temporaryRoot, 'seed')
-  const checkout = join(temporaryRoot, 'checkout')
-  try {
-    await mkdir(join(seed, 'scripts'), { recursive: true })
-    await mkdir(join(seed, 'vendor'), { recursive: true })
-    await cp(join(root, '.gitattributes'), join(seed, '.gitattributes'))
-    await cp(join(root, 'package.json'), join(seed, 'package.json'))
-    await cp(join(root, 'scripts', 'upstream-manifest.mjs'), join(seed, 'scripts', 'upstream-manifest.mjs'))
-    await cp(join(root, 'vendor', 'agent-vision-toolkit'), join(seed, 'vendor', 'agent-vision-toolkit'), { recursive: true })
-    await writeFile(join(seed, 'autocrlf-probe.txt'), 'line one\nline two\n')
-
-    const setupCommands = [
-      ['init', '--quiet'],
-      ['config', 'user.name', 'DSH portable verification'],
-      ['config', 'user.email', 'portable@example.invalid'],
-      ['config', 'core.autocrlf', 'false'],
-      ['add', '.'],
-      ['commit', '--quiet', '-m', 'checkout fixture'],
-    ]
-    for (const args of setupCommands) {
-      const result = run('git', args, seed)
-      if (result.status !== 0) {
-        failures.push(`could not prepare Windows checkout fixture: ${(result.stderr || result.stdout).trim()}`)
-        return
-      }
-    }
-
-    const clone = run('git', ['-c', 'core.autocrlf=true', 'clone', '--no-local', '--quiet', seed, checkout], temporaryRoot)
-    if (clone.status !== 0) {
-      failures.push(`core.autocrlf=true checkout failed: ${(clone.stderr || clone.stdout).trim()}`)
-      return
-    }
-    const probe = await readFile(join(checkout, 'autocrlf-probe.txt'))
-    check(probe.includes(Buffer.from('\r\n')), 'core.autocrlf=true checkout fixture did not exercise CRLF conversion')
-
-    const manifest = run(process.execPath, ['scripts/upstream-manifest.mjs'], checkout)
-    if (manifest.status !== 0) {
-      failures.push(`vendored upstream is not byte-stable under core.autocrlf=true: ${(manifest.stderr || manifest.stdout).trim()}`)
-    }
-  } finally {
-    await rm(temporaryRoot, { recursive: true, force: true })
-  }
-}
-
 const packagePath = join(root, 'package.json')
 const pkg = JSON.parse(await readFile(packagePath, 'utf8'))
 const changelog = await readFile(join(root, 'CHANGELOG.md'), 'utf8')
@@ -127,7 +76,14 @@ check(pkg.dsh?.client?.platform === 'web', 'dsh.client.platform must publish the
 check(pkg.dshClient === undefined, 'legacy top-level dshClient metadata must remain absent')
 check(pkg.exports?.['./client']?.default === './lib/client.js', 'the Web client export must resolve to lib/client.js')
 check(Array.isArray(pkg.files) && pkg.files.includes('assets'), 'package files must include README visual assets')
-check(pkg.scripts?.['verify:portable'] === 'node scripts/upstream-manifest.mjs && node scripts/verify-portable.mjs', 'verify:portable script is missing or changed')
+check(!Array.isArray(pkg.files) || !pkg.files.includes('runtime'), 'package files must not include the removed Python runtime')
+check(!Array.isArray(pkg.files) || !pkg.files.includes('vendor'), 'package files must not include the removed vendored upstream')
+check(pkg.scripts?.['verify:portable'] === 'node scripts/verify-portable.mjs', 'verify:portable script is missing or changed')
+check(pkg.dependencies?.saxes === undefined, 'the saxes dependency must be removed (no SVG validation)')
+check(pkg.peerDependencies?.['@deepseek-ai/dsh-attachment'] === '^0.1.0-rc.6', '@deepseek-ai/dsh-attachment must be a host-provided peer dependency')
+check(pkg.peerDependencies?.['@deepseek-ai/dsh-credentials'] === undefined, 'the dsh-credentials peer dependency must be removed')
+check(pkg.peerDependencies?.['@deepseek-ai/dsh-subprocess'] === undefined, 'the dsh-subprocess peer dependency must be removed')
+check(pkg.peerDependencies?.['@deepseek-ai/dsh-skill'] === undefined, 'the dsh-skill peer dependency must be removed')
 check(pkg.peerDependencies?.['@deepseek-ai/schemastery'] === '^3.18.1', '@deepseek-ai/schemastery must be a host-provided peer dependency')
 check(pkg.peerDependencies?.schemastery === undefined, 'unscoped schemastery peer dependency must remain absent')
 check(pkg.peerDependencies?.['@deepseek-ai/cordis'] === '^4.0.1', '@deepseek-ai/cordis must be a host-provided peer dependency')
@@ -170,8 +126,6 @@ const requiredFiles = [
   'lib/client.js',
   'assets/hero.png',
   'assets/social-preview.png',
-  'runtime/requirements.lock',
-  'vendor/agent-vision-toolkit/UPSTREAM_MANIFEST.json',
 ]
 for (const path of requiredFiles) {
   check(await exists(join(root, path)), `required file is missing: ${path}`)
@@ -193,8 +147,6 @@ for (const path of publicRepositoryFiles) {
     `${path} still links to the retired dsh-external repository`,
   )
 }
-
-await verifyWindowsCheckout()
 
 const declaredEntrypoints = [
   pkg.main,
@@ -244,14 +196,12 @@ for (const path of javascriptFiles) {
 
 const client = await readFile(join(root, 'lib/client.js'), 'utf8')
 check(client.includes('window.__ModuleLoader__.load'), 'lib/client.js is not a loader-compatible DSH Web bundle')
-const upstreamAdapter = await readFile(join(root, 'lib/upstream.js'), 'utf8')
-check(upstreamAdapter.includes('--use-mock-keychain'), 'HTML screenshot adapter is missing --use-mock-keychain')
-check(upstreamAdapter.includes('--user-data-dir='), 'HTML screenshot adapter is missing an isolated --user-data-dir')
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const pack = spawnSync(npm, ['pack', '--dry-run', '--ignore-scripts', '--json'], {
   cwd: root,
   encoding: 'utf8',
+  ...(process.platform === 'win32' ? { shell: true } : {}),
 })
 if (pack.status !== 0) {
   failures.push(`npm pack --dry-run failed: ${(pack.stderr || pack.stdout).trim()}`)

@@ -1,84 +1,54 @@
 /**
- * Plugin configuration: provider endpoint and credential reference, output
- * language, limits, and the external upstream runtime location. Secrets never
- * live here — `provider.credential` is a DSH Credential reference resolved per
- * operation through `ctx.credentials`.
+ * Plugin configuration: an optional app-model selection, output language, and
+ * limits. There are no secrets and no provider endpoints here — the DSH app
+ * owns the configured model's URL and key.
  * @module dsh-vision-toolkit/config
  */
 import type Schema from '@deepseek-ai/schemastery';
-import { type CredentialRef } from '@deepseek-ai/dsh-credentials';
 /** Settings document namespace owned by this plugin. */
 export declare const VISION_TOOLKIT_SETTINGS_NAMESPACE: import("@deepseek-ai/dsh-settings").SettingsNamespace;
-/** Browser-compatible default shared with the vendored Python client. */
-export declare const DEFAULT_VISION_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-/** Full user-facing configuration; every field defaults at the schema boundary. */
+/** Full user-facing configuration; every limit defaults at the schema boundary. */
 export interface VisionToolkitConfig {
-    provider?: {
-        /** Provider API base URL. */
-        baseUrl?: string;
-        /** DSH Credential reference holding the API key (an environment-style name). */
-        credential?: string;
-        /** Multimodal model name. */
+    /** Selected app model; absent (or empty) means the tool is not registered. */
+    model?: {
+        provider?: string;
         model?: string;
-        /** Vision request protocol: OpenAI Chat Completions or Anthropic Messages. */
-        protocol?: 'openai' | 'anthropic';
-        /** Anthropic thinking field behavior; `omit` leaves model defaults untouched. */
-        anthropicThinking?: 'omit' | 'disabled' | 'adaptive';
-        /** Outbound User-Agent for provider requests and connection tests. */
-        userAgent?: string;
     };
     /** Vision output language (`zh` or `en`). */
     language?: 'zh' | 'en';
-    /** Single remote/upstream call budget in milliseconds. */
+    /** Whole-operation deadline in milliseconds. */
     timeoutMs?: number;
-    /** Maximum accepted input image size in bytes. */
+    /** Encoded-byte limit per input image. */
     maxImageBytes?: number;
-    /** Maximum decoded pixel count per input image. */
+    /** Decoded-pixel limit per input image. */
     maxImagePixels?: number;
     /** In-flight tool execution cap per session. */
     concurrency?: number;
-    runtime?: {
-        /** `managed` uses the packaged snapshot and isolated venv; `external` uses a clean pinned checkout. */
-        mode?: 'managed' | 'external';
-        /** Required path to the clean pinned checkout when `mode` is `external`. */
-        agentVisionToolkitPath?: string;
-        /** Optional Python 3.11+ bootstrap/interpreter override. */
-        python?: string;
-    };
+    /** Maximum images accepted per call. */
+    maxImages?: number;
     /** Extra directories (besides the workspace) inputs may come from. */
     allowedDirs?: string[];
 }
-/** Configuration schema with the documented P0 defaults. */
+/** Configuration schema with documented defaults. */
 export declare const Config: Schema<VisionToolkitConfig>;
 /** Configuration after static validation, with every default materialized. */
 export interface ResolvedVisionToolkitConfig {
-    provider: {
-        baseUrl: string;
-        credential: CredentialRef;
+    model: {
+        provider: string;
         model: string;
-        protocol: 'openai' | 'anthropic';
-        anthropicThinking: 'omit' | 'disabled' | 'adaptive';
-        userAgent: string;
-    };
+    } | undefined;
     language: 'zh' | 'en';
     timeoutMs: number;
     maxImageBytes: number;
     maxImagePixels: number;
     concurrency: number;
-    runtime: {
-        mode: 'managed' | 'external';
-        agentVisionToolkitPath?: string;
-        python?: string;
-    };
+    maxImages: number;
     allowedDirs: string[];
 }
 /**
  * Validate and normalize a config object (partial inputs receive the same
- * defaults the schemastery schema applies). Configuration mistakes fail loud
- * at plugin load (the earliest resolvable point); runtime availability is a
- * separate, later concern.
- * @param config - parsed config with defaults applied.
- * @returns the fully defaulted, validated configuration.
+ * defaults the schemastery schema applies). A half-set `model` fails loud; an
+ * absent or fully-empty `model` means the tool stays unregistered.
  */
 export declare function resolveConfig(config?: VisionToolkitConfig): ResolvedVisionToolkitConfig;
 //# sourceMappingURL=config.d.ts.map

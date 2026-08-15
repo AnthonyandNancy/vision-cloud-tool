@@ -1,11 +1,10 @@
 /**
- * @anionex/dsh-vision-toolkit — DSH Vision Toolkit profile bundle.
+ * @anionex/dsh-vision-toolkit — online-only vision plugin.
  *
- * Plugin lifecycle follows the documented readiness chain: verify the pinned
- * upstream checkout, publish the vision-tools Skill and its one-shot bootstrap,
- * then mount the execution tools only in Agents that load that Skill. Any
- * failure leaves no model capability behind, and disposal unregisters every
- * global and Agent-scoped contribution the plugin mounted.
+ * Registers a single `vision_cloud_tool` only when a vision model is selected
+ * in Settings (default off). The tool reads images through the DSH app's
+ * configured model via `ctx.llm` and returns modlens v2 structured evidence.
+ * No Python, no local tools, no credential or endpoint configuration.
  * @module @anionex/dsh-vision-toolkit
  */
 import type { Context } from '@deepseek-ai/cordis';
@@ -13,6 +12,6 @@ import { Config, type VisionToolkitConfig } from './config.ts';
 export declare const name = "@anionex/dsh-vision-toolkit";
 export { Config };
 export declare const inject: string[];
-/** Plugin entry: validate configuration synchronously, then mount asynchronously. */
-export declare function apply(ctx: Context, config?: VisionToolkitConfig): Promise<() => void>;
+/** Plugin entry: validate configuration, then mount the tool when enabled. */
+export declare function apply(ctx: Context, config?: VisionToolkitConfig): () => void;
 //# sourceMappingURL=index.d.ts.map

@@ -1,7 +1,5 @@
 /**
- * Stable error vocabulary shared by the runtime, upstream adapter, and tools.
- * Every failure reaching the model carries one of these codes and a message
- * that never contains credentials or raw upstream stack traces.
+ * Stable error vocabulary shared by the runtime and tools.
  * @module dsh-vision-toolkit/errors
  */
 /** Discriminant tag for every Vision Toolkit failure. */
@@ -15,21 +13,4 @@ export declare class VisionToolkitError extends Error {
         cause?: unknown;
     });
 }
-/**
- * Replace every known secret occurrence in untrusted text. Used before
- * upstream stderr, exit messages, or trace reports enter logs or results.
- * @param text - text that may embed a secret.
- * @param secrets - values that must never be surfaced.
- * @returns text with each secret replaced by a fixed marker.
- */
-export declare function redactText(text: string, secrets: readonly string[]): string;
-/**
- * Build a model-safe upstream failure line: the tool prefix plus the
- * redacted stderr tail, never a JavaScript stack.
- * @param tool - upstream CLI name.
- * @param stderr - captured upstream stderr.
- * @param secrets - values to redact.
- * @returns one-line safe message.
- */
-export declare function upstreamFailureMessage(tool: string, stderr: string, secrets: readonly string[]): string;
 //# sourceMappingURL=errors.d.ts.map

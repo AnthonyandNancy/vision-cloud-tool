@@ -1,62 +1,54 @@
 /**
- * Optional Web-profile routes: signed Artifact delivery plus a same-origin
- * Settings/health endpoint. The browser never receives credential values and
- * connection tests run only after an explicit POST action.
+ * Optional Web-profile routes: the minimal Settings endpoint (model list, save,
+ * test read) plus the paste-images route. No secrets, no health/credential
+ * surface — the DSH app owns the model's endpoint and key.
  * @module dsh-vision-toolkit/web
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
-import type { CredentialInfo, CredentialRef } from '@deepseek-ai/dsh-credentials'
-import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { SettingsConflictError, type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
+import { type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 // Type-only import activates the optional webServer Context declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { ArtifactAccessController, ARTIFACT_ROUTE_PREFIX } from './artifact-access.ts'
 import { PastedImageBackend, PASTE_IMAGES_ROUTE } from './paste-images.ts'
 import {
   resolveConfig,
   VISION_TOOLKIT_SETTINGS_NAMESPACE,
-  type ResolvedVisionToolkitConfig,
   type VisionToolkitConfig,
 } from './config.ts'
-import type { VisionToolkitHealthResult } from './runtime.ts'
-import {
-  VisionToolkitRuntimeManager,
-  type PreparedRuntimeGeneration,
-  type RuntimeManagerStatus,
-} from './runtime-manager.ts'
-import { PLUGIN_VERSION, UPSTREAM_COMMIT, UPSTREAM_REPOSITORY, UPSTREAM_VERSION } from './version.ts'
+import type { VisionToolkitRuntime } from './runtime.ts'
+import { PLUGIN_VERSION } from './version.ts'
 import { sameOriginPost } from './web-request.ts'
 
 /** Exact route used by the browser Settings page. */
 export const SETTINGS_ROUTE = '/_dsh/vision-toolkit/settings'
 
-/** Public Settings snapshot; credential values are deliberately impossible here. */
+/** One selectable model under one registered provider route. */
+export interface VisionModelEntry {
+  id: string
+  name: string
+  inputModalities: string[]
+}
+
+/** One provider route and its advertised models. */
+export interface VisionProviderEntry {
+  provider: string
+  name: string
+  models: VisionModelEntry[]
+}
+
+/** Public Settings snapshot; no credential values are possible here. */
 export interface VisionToolkitSettingsSnapshot {
   schemaVersion: 1
   writable: boolean
+  pluginVersion: string
+  enabled: boolean
   settings: {
     value: VisionToolkitConfig
-    user?: unknown
-    base?: unknown
     revision: number
     applies: 'live'
   }
-  credential: {
-    ref: string
-    configured: boolean
-    source?: string
-    writable: boolean
-  }
-  runtime: RuntimeManagerStatus
-  release: {
-    pluginVersion: string
-    upstreamRepository: string
-    upstreamVersion: string
-    upstreamCommit: string
-  }
-  artifactRouteAvailable: boolean
+  providers: VisionProviderEntry[]
 }
 
 interface SaveRequest {
@@ -65,19 +57,11 @@ interface SaveRequest {
   value: VisionToolkitConfig
 }
 
-interface HealthRequest {
-  action: 'health'
-  testConnection: boolean
+interface TestRequest {
+  action: 'testRead'
 }
 
-interface CredentialRequest {
-  action: 'credential'
-  expectedRevision: number
-  ref: CredentialRef
-  value: string
-}
-
-type SettingsRequest = SaveRequest | HealthRequest | CredentialRequest
+type SettingsRequest = SaveRequest | TestRequest
 
 interface JsonError {
   ok: false
@@ -91,24 +75,9 @@ interface JsonSuccess<T> {
 
 type JsonResponse<T> = JsonSuccess<T> | JsonError
 
-/** Minimal runtime-manager face used by the Web route and its tests. */
-export interface WebRuntimeManager {
-  readonly ready: boolean
-  current(): ReturnType<VisionToolkitRuntimeManager['current']>
-  prepareCandidate(raw: VisionToolkitConfig): Promise<PreparedRuntimeGeneration>
-  activateCandidate(candidate: PreparedRuntimeGeneration): void
-  recordFailure(error: unknown): void
-  status(): RuntimeManagerStatus
-}
-
-/** Callback invoked when a Settings save makes the first runtime available. */
-export type RuntimeActivated = () => void
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
-
-class CredentialReferenceConflictError extends Error {}
 
 function descriptorOf(ctx: Context): SettingsDescriptor {
   const descriptor = ctx.settings.describe().find(row => row.ns === VISION_TOOLKIT_SETTINGS_NAMESPACE)
@@ -148,10 +117,7 @@ async function readJson(req: IncomingMessage, maxBytes = 64 * 1024): Promise<unk
 
 function parseRequest(value: unknown): SettingsRequest {
   if (!isRecord(value) || typeof value.action !== 'string') throw new TypeError('request action is required')
-  if (value.action === 'health') {
-    if (typeof value.testConnection !== 'boolean') throw new TypeError('health.testConnection must be boolean')
-    return { action: 'health', testConnection: value.testConnection }
-  }
+  if (value.action === 'testRead') return { action: 'testRead' }
   if (value.action === 'save') {
     if (!Number.isSafeInteger(value.expectedRevision) || (value.expectedRevision as number) < 0) {
       throw new TypeError('save.expectedRevision must be a non-negative integer')
@@ -163,27 +129,6 @@ function parseRequest(value: unknown): SettingsRequest {
       value: value.value as VisionToolkitConfig,
     }
   }
-  if (value.action === 'credential') {
-    if (!Number.isSafeInteger(value.expectedRevision) || (value.expectedRevision as number) < 0) {
-      throw new TypeError('credential.expectedRevision must be a non-negative integer')
-    }
-    if (typeof value.ref !== 'string') throw new TypeError('credential.ref must be a string')
-    if (typeof value.value !== 'string') throw new TypeError('credential.value must be a string')
-    const secret = value.value.trim()
-    if (secret.length === 0) throw new TypeError('API key cannot be blank')
-    const first = secret[0]
-    const quoted = secret.length > 1 && (first === '"' || first === '\'' || first === '`') && secret.endsWith(first)
-    const environmentLine = /^[A-Z][A-Z0-9_]*=[^=]/u.test(secret)
-    if (quoted || environmentLine || !/^[\x21-\x7E]+$/u.test(secret)) {
-      throw new TypeError('paste only the API key, without a variable name, quotes, spaces, or line breaks')
-    }
-    return {
-      action: 'credential',
-      expectedRevision: value.expectedRevision as number,
-      ref: credentialRef(value.ref),
-      value: secret,
-    }
-  }
   throw new TypeError(`unsupported action: ${value.action}`)
 }
 
@@ -192,107 +137,69 @@ function publicMessage(error: unknown): string {
   return String(error)
 }
 
-/** Same-origin Settings and health handler. */
+/** Same-origin Settings handler. */
 export class VisionToolkitWebBackend {
   constructor(
     private readonly ctx: Context,
-    private readonly manager: WebRuntimeManager,
-    private readonly artifacts: ArtifactAccessController,
-    private readonly onRuntimeActivated: RuntimeActivated,
+    private readonly runtimeSource: () => VisionToolkitRuntime | undefined,
   ) {}
 
-  private async credential(config: ResolvedVisionToolkitConfig): Promise<CredentialInfo> {
-    return this.ctx.credentials.describe(credentialRef(String(config.provider.credential)))
+  private async providers(): Promise<VisionProviderEntry[]> {
+    const out: VisionProviderEntry[] = []
+    for (const info of this.ctx.llm.listProviders()) {
+      let models: VisionModelEntry[] = []
+      try {
+        models = (await this.ctx.llm.listModels(info.id)).map(model => ({
+          id: model.id,
+          name: model.name,
+          inputModalities: [...(model.inputModalities ?? [])],
+        }))
+      } catch {
+        models = []
+      }
+      out.push({ provider: info.id, name: info.name, models })
+    }
+    return out
   }
 
-  /** Build the current settings/runtime/credential snapshot without secrets. */
+  /** Build the current settings/model snapshot without secrets. */
   async snapshot(): Promise<VisionToolkitSettingsSnapshot> {
     const descriptor = descriptorOf(this.ctx)
     const value = descriptor.value as VisionToolkitConfig
-    const resolved = resolveConfig(value)
-    const credential = await this.credential(resolved)
     return {
       schemaVersion: 1,
       writable: this.ctx.settings.writable,
+      pluginVersion: PLUGIN_VERSION,
+      enabled: resolveConfig(value).model !== undefined,
       settings: {
         value,
-        ...(descriptor.user === undefined ? {} : { user: descriptor.user }),
-        ...(descriptor.base === undefined ? {} : { base: descriptor.base }),
         revision: descriptor.revision,
         applies: 'live',
       },
-      credential: {
-        ref: String(resolved.provider.credential),
-        configured: credential.configured,
-        ...(credential.source === undefined ? {} : { source: credential.source }),
-        writable: credential.writable,
-      },
-      runtime: this.manager.status(),
-      release: {
-        pluginVersion: PLUGIN_VERSION,
-        upstreamRepository: UPSTREAM_REPOSITORY,
-        upstreamVersion: UPSTREAM_VERSION,
-        upstreamCommit: UPSTREAM_COMMIT,
-      },
-      artifactRouteAvailable: this.artifacts.routeAvailable,
+      providers: await this.providers(),
     }
   }
 
   private async save(request: SaveRequest): Promise<VisionToolkitSettingsSnapshot> {
     if (!this.ctx.settings.writable) throw new Error('settings provider is read-only')
-    let candidate: PreparedRuntimeGeneration
-    try {
-      candidate = await this.manager.prepareCandidate(request.value)
-    } catch (error) {
-      this.manager.recordFailure(error)
-      throw error
-    }
     await this.ctx.settings.replace(
       VISION_TOOLKIT_SETTINGS_NAMESPACE,
       request.value as object,
       request.expectedRevision,
     )
-    this.manager.activateCandidate(candidate)
-    this.onRuntimeActivated()
     return this.snapshot()
   }
 
-  private async saveCredential(request: CredentialRequest): Promise<VisionToolkitSettingsSnapshot> {
-    const descriptor = descriptorOf(this.ctx)
-    if (descriptor.revision !== request.expectedRevision) {
-      throw new SettingsConflictError(
-        VISION_TOOLKIT_SETTINGS_NAMESPACE,
-        request.expectedRevision,
-        descriptor.revision,
-      )
-    }
-    const resolved = resolveConfig(descriptor.value as VisionToolkitConfig)
-    const currentRef = credentialRef(String(resolved.provider.credential))
-    if (currentRef !== request.ref) {
-      throw new CredentialReferenceConflictError(
-        `credential reference changed from "${request.ref}" to "${currentRef}"; reload Settings and try again`,
-      )
-    }
-    await this.ctx.credentials.set(currentRef, request.value)
-    return this.snapshot()
-  }
-
-  private async health(request: HealthRequest, req: IncomingMessage): Promise<VisionToolkitHealthResult> {
-    if (!this.manager.ready) throw new Error('runtime is not ready; fix Settings and save a valid configuration first')
+  private async testRead(): Promise<VisionToolkitSettingsSnapshot> {
+    const runtime = this.runtimeSource()
+    if (runtime === undefined) throw new Error('no vision model selected; save a model first')
     const controller = new AbortController()
-    const abort = (): void => { controller.abort() }
-    req.once('aborted', abort)
-    req.socket.once('close', abort)
-    try {
-      return await this.manager.current().health(request.testConnection, {
-        signal: controller.signal,
-        workspace: process.cwd(),
-        sessionId: 'vision-toolkit-settings',
-      })
-    } finally {
-      req.off('aborted', abort)
-      req.socket.off('close', abort)
-    }
+    await runtime.selfTest({
+      signal: controller.signal,
+      workspace: process.cwd(),
+      sessionId: 'vision-toolkit-settings',
+    })
+    return this.snapshot()
   }
 
   /** Handle the exact Settings route. */
@@ -323,32 +230,14 @@ export class VisionToolkitWebBackend {
       return
     }
     try {
-      switch (parsed.action) {
-        case 'health':
-          responseJson(res, 200, { ok: true, value: await this.health(parsed, req) })
-          break
-        case 'save':
-          responseJson(res, 200, { ok: true, value: await this.save(parsed) })
-          break
-        case 'credential':
-          responseJson(res, 200, { ok: true, value: await this.saveCredential(parsed) })
-          break
+      if (parsed.action === 'testRead') {
+        responseJson(res, 200, { ok: true, value: await this.testRead() })
+      } else {
+        responseJson(res, 200, { ok: true, value: await this.save(parsed) })
       }
     } catch (error) {
-      const settingsConflict = error instanceof SettingsConflictError
-      const credentialConflict = error instanceof CredentialReferenceConflictError
-      const code = settingsConflict
-        ? 'settings-conflict'
-        : credentialConflict
-          ? 'credential-conflict'
-          : parsed.action === 'health'
-            ? 'health-failed'
-            : parsed.action === 'credential'
-              ? 'credential-rejected'
-              : 'settings-rejected'
-      const status = settingsConflict || credentialConflict ? 409 : parsed.action === 'health' ? 503 : 400
       this.ctx.logger.warn('dsh-vision-toolkit Web action=%s failed: %s', parsed.action, publicMessage(error))
-      requestError(res, status, code, publicMessage(error))
+      requestError(res, 400, 'settings-rejected', publicMessage(error))
     }
   }
 }
@@ -357,22 +246,15 @@ export class VisionToolkitWebBackend {
  * Attach optional Web routes whenever a webServer service is present.
  * @param ctx - plugin context owning route effects.
  * @param backend - Settings handler.
- * @param artifacts - signed Artifact handler.
+ * @param pastedImages - paste-image upload handler.
  */
 export function installVisionToolkitWeb(
   ctx: Context,
   backend: VisionToolkitWebBackend,
-  artifacts: ArtifactAccessController,
   pastedImages: PastedImageBackend,
 ): void {
   ctx.inject(['webServer'], (webCtx) => {
     webCtx.effect(() => {
-      const detach = artifacts.attachRoute()
-      const disposeArtifact = webCtx.webServer.register({
-        kind: 'prefix',
-        path: ARTIFACT_ROUTE_PREFIX,
-        handler: (req, res) => artifacts.handle(req, res),
-      })
       const disposeSettings = webCtx.webServer.register({
         kind: 'exact',
         path: SETTINGS_ROUTE,
@@ -386,8 +268,6 @@ export function installVisionToolkitWeb(
       return () => {
         disposePasteImages()
         disposeSettings()
-        disposeArtifact()
-        detach()
       }
     }, 'dsh-vision-toolkit: Web routes')
   })
