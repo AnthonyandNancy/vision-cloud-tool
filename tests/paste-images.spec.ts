@@ -260,7 +260,7 @@ describe('pasted image Web backend', () => {
     expect(await response.json()).toEqual({ takeover: false })
   })
 
-  it('returns a native verdict when both label and session model are absent (L4)', async () => {
+  it('returns the text-safe bridge verdict when both label and session model are absent (L4 reversed, 3.9)', async () => {
     const { base } = await setupVerdict({
       sessions: { get: () => undefined },
       logger: { warn: vi.fn() },
@@ -271,7 +271,7 @@ describe('pasted image Web backend', () => {
       },
     })
     const response = await fetch(`${base}${PASTE_IMAGES_ROUTE}`)
-    expect(await response.json()).toEqual({ takeover: false })
+    expect(await response.json()).toEqual({ takeover: true })
   })
 
   it('serves a bridged image back over the read-only file route (A8)', async () => {

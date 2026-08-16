@@ -305,7 +305,13 @@ export class PasteImageController {
   private syncTakeover(sessionId: string): boolean | undefined {
     const pick = this.currentPick(sessionId)
     const key = this.verdictKey(sessionId, pick)
-    if (key === undefined) return false
+    // No model signal is NOT a native verdict: returning `false` here would
+    // pass the event straight through to the native handler without a
+    // preventDefault, inserting a raw image block that pi-ai text-only
+    // models reject with UNSUPPORTED_CONTENT (the harness agent composer has
+    // no model picker at all). Hold instead; the decide-then-act flow below
+    // routes the no-signal case to the text-safe bridge.
+    if (key === undefined) return undefined
     const cached = this.verdicts.get(key)
     if (cached !== undefined && !cached.pending && cached.takeover !== undefined
       && cached.at > 0 && Date.now() - cached.at <= this.VERDICT_MAX_AGE_MS) {
@@ -575,8 +581,17 @@ export class PasteImageController {
     event.stopImmediatePropagation()
     const pick = this.currentPick(String(sessionId))
     if (this.verdictKey(String(sessionId), pick) === undefined) {
-      // No model signal at all: release the held event natively now.
-      if (snapshot.phase === 'plain') this.releaseNatively(input, files, text, start, end, target, 'paste')
+      // No model signal at all — e.g. the harness agent composer has no model
+      // picker — so bridge: the text-safe direction. A native release here
+      // puts an image block straight into the message and pi-ai text-only
+      // models reject the whole request with UNSUPPORTED_CONTENT (session
+      // evidence: agentHome 41683fc5, 2026-08-16).
+      if (snapshot.phase !== 'plain') return true
+      try {
+        this.finishBridge(String(sessionId), input, files, text, start, end, target)
+      } catch (error) {
+        input.notify('error', message(error))
+      }
       return true
     }
     void this.settlePaste(String(sessionId), pick, input, files, text, start, end, target, 'paste')
@@ -637,7 +652,14 @@ export class PasteImageController {
     window.dispatchEvent(new Event('dragend'))
     const pick = this.currentPick(String(sessionId))
     if (this.verdictKey(String(sessionId), pick) === undefined) {
-      if (snapshot.phase === 'plain') this.releaseNatively(input, files, text, start, end, textarea, 'drop')
+      // No model signal at all: bridge, the text-safe direction (see the
+      // paste counterpart above).
+      if (snapshot.phase !== 'plain') return true
+      try {
+        this.finishBridge(String(sessionId), input, files, text, start, end, textarea, true)
+      } catch (error) {
+        input.notify('error', message(error))
+      }
       return true
     }
     void this.settlePaste(String(sessionId), pick, input, files, text, start, end, textarea, 'drop')

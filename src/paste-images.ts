@@ -256,7 +256,12 @@ export class PastedImageBackend {
       return this.takeoverForExact(exact.provider, exact.model)
     }
 
-    return false
+    // No model information at all: bridge, the text-safe direction (3.9).
+    // A native verdict here puts a raw image block into the request, which
+    // pi-ai text-only models reject outright with UNSUPPORTED_CONTENT; the
+    // bridge degrades a possible multimodal model to path text + the vision
+    // tool instead — safe in both directions.
+    return true
   }
 
   /**

@@ -425,6 +425,78 @@ describe('clipboard image client', () => {
     bench.dispose()
   })
 
+  it('bridges pasted images with no model signal instead of releasing them natively (A25, harness agent composer)', async () => {
+    const bench = fakeClient('')
+    // Composer WITHOUT the model-selector button and no modelDirectories
+    // service: the picker has no signal. That must take the text-safe bridge,
+    // because a native release would insert a raw image block that pi-ai
+    // text-only models reject with UNSUPPORTED_CONTENT (agentHome 41683fc5).
+    const card = document.createElement('div')
+    card.dataset.composerCard = ''
+    const textarea = document.createElement('textarea')
+    card.appendChild(textarea)
+    document.body.appendChild(card)
+    const nativePaste = vi.fn()
+    textarea.addEventListener('paste', nativePaste)
+    const request = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(init.body).toBeInstanceOf(File)
+      return new Response(JSON.stringify({
+        ok: true,
+        value: { absolutePath: '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/no-signal-01.png' },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', request)
+
+    const event = clipboardEvent('', [file('one.png', 'image/png', [1])])
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(nativePaste).not.toHaveBeenCalled()
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft.match(/\uFFFC/gu)).toHaveLength(1)
+    expect(snapshot.occurrences).toHaveLength(1)
+    expect(snapshot.imageIds).toEqual([])
+
+    await flushTasks()
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const refs = snapshot.occurrences.map(row => row.ref)
+    const [serialized] = await Promise.all(refs.map(ref => codec.serialize(ref, new AbortController().signal)))
+    expect(serialized).toContain('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/no-signal-01.png"]')
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(request.mock.calls.every(([url]) => String(url).startsWith('/_dsh/vision-cloud/paste-images?'))).toBe(true)
+    bench.dispose()
+  })
+
+  it('bridges dropped images with no model signal instead of releasing them natively (A25 drop, harness agent composer)', async () => {
+    const bench = fakeClient('')
+    const card = document.createElement('div')
+    card.dataset.composerCard = ''
+    const textarea = document.createElement('textarea')
+    card.appendChild(textarea)
+    document.body.appendChild(card)
+    const nativeDrop = vi.fn()
+    textarea.addEventListener('drop', nativeDrop)
+
+    const event = dropEvent('caption', [file('one.png', 'image/png', [1])])
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(nativeDrop).not.toHaveBeenCalled()
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft).toContain('caption')
+    expect(snapshot.draft.match(/\uFFFC/gu)).toHaveLength(1)
+    expect(snapshot.occurrences).toHaveLength(1)
+    expect(snapshot.imageIds).toEqual([])
+    await flushTasks()
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const refs = snapshot.occurrences.map(row => row.ref)
+    const [serialized] = await Promise.all(refs.map(ref => codec.serialize(ref, new AbortController().signal)))
+    expect(serialized).toContain('[Pasted image available at absolute path:')
+    bench.dispose()
+  })
+
   it('ignores non-image clipboard files so ordinary text paste remains native', () => {
     const bench = fakeClient('before ')
     const textarea = composer()

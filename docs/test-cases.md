@@ -207,6 +207,8 @@ Get-ChildItem -Recurse .dsh-vision-cloud\tmp\pasted-images -File | Select-Object
 | A22 | chat.node 阴影注册：`user`/`steering` 两 key、priority -1、locale 'conversation' | `paste-images-client.spec.ts` | ✅ |
 | A23 | 桥接标记解析与渲染：路径行隐藏、file-route 渲染为 `<img>`、非桥接 markdown 原样（3.8） | `user-message-view.spec.ts` 新文件 | ✅ |
 | A24 | 阴影视图复刻产品气泡：原生图 loadImage 渲染/重试/灯箱、引用芯片、JsonBlock、复制/时间（3.8） | `user-message-view.spec.ts` 新文件 | ✅ |
+| A25 | 无模型信号（harness agent 输入框无模型选择器）paste/drop → **text-safe 桥接**而非原生放行（3.9） | `paste-images-client.spec.ts` | ✅ |
+| A26 | `syncTakeover` 无信号返回 `undefined`（挂起）而非 `false`（原生放行）——3.9 核心回归 | `paste-images-client.spec.ts`（A25 两用例覆盖） | ✅ |
 
 ### 3.1 宿主裁决优先级（修复①②，A3/A4）— 追加到 `tests/paste-images.spec.ts`
 
@@ -391,6 +393,25 @@ it('keeps the URL/path exception for image-capable models', () => {
 // 8) 注册面：key='user' 与 key='steering' 各一条，priority:-1，locale:'conversation'（槽位运行时合成 t）
 ```
 
+### 3.9 无模型信号 → text-safe 桥接（A25/A26）— 推翻 L4，2026-08-16 harness 实锤
+
+> **事故**（2026-08-16 08:07，harness agent GUI，会话日志 `agentHome/41683fc5`）：用户在
+> DeepSeek-V4-Flash-0731（文本，pi-ai/abrdns）会话里拖入图片并发送 → `pi-ai model "DeepSeek-V4-Flash-0731"
+> does not support image input / UNSUPPORTED_CONTENT`。日志显示新消息 = **原生图片附件块 + 文本**（无桥接标记）：
+> harness agent 输入框**没有模型选择器**（无 DOM 标签、无 modelDirectories 信号），旧代码在
+> `syncTakeover()` 里把"无信号"错误地返回 `false`（等同"确认多模态"）→ `handlePaste/handleDrop` 不
+> `preventDefault` 直接放行 → 原生管线把图片块塞进消息 → pi-ai 对文本模型整体拒绝。
+> 对比会话 `agentHome/2f05ec7f`（08:20，同环境）：模型拿到路径文本并自行调用 `vision_cloud_tool` 识图，链路正常。
+
+**修改**（全部在 `src/client/paste-images.tsx`）：
+
+1. `syncTakeover`：`verdictKey` 为 `undefined`（无信号）时返回 `undefined`（挂起）而非 `false`——"无信号"≠"确认多模态"；
+2. `handlePaste` / `handleDrop` 挂起分支的"无信号"走向从 `releaseNatively` 改为 `finishBridge`（text-safe，与 verdict 不可得时 GA20 的兜底方向一致）。
+
+**为何可推翻 L4**：留原生只在"确认多模态"时有收益；无信号时原生放行对 pi-ai 文本模型是**必炸**
+（UNSUPPORTED_CONTENT），而桥接降级只是让（可能的）多模态模型拿到路径文本——识图由
+`vision_cloud_tool` 保证，对显示层阴影渲染器照样出大图。桌面端有完整模型信号的路径完全不变。
+
 ---
 
 ## 4. 执行顺序与门禁
@@ -410,5 +431,5 @@ it('keeps the URL/path exception for image-capable models', () => {
 | L1 | E11：多模态期原生附件 + 切文本后直接发送 | DSH 宿主按 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒绝并提示，属 DSH 自身行为；插件无公开 API 转换既有草案附件。缓解：删除附件行后重新粘贴（此时裁决已是当前选择，走桥接） |
 | L2 | E4：bmp/svg 等非白名单格式 | 桥接只负责搬运落盘；`vision_cloud_tool` 按 `paths.ts` 白名单（.png/.jpg/.jpeg/.gif/.webp）拒绝。后续可选改进：桥接端先行拒收并在芯片上即时报错 |
 | L3 | 修复⑤的气泡内联图片 | 已由 3.8 阴影渲染器实现：插件自带 `user`/`steering` 气泡视图（priority -1 阴影），不再依赖 DSH 消息 markdown 渲染器——用户气泡本来就是纯文本渲染，markdown 内联图从未可行。桥接消息对模型仍是"路径文本"，对显示是大图 + 干净文字 |
-| L4 | 空裁决（无任何模型信息）| 保持 `takeover:false`（原生），避免误伤；客户端以 ⑥ 失败告警兜底 |
+| L4 | 空裁决（无任何模型信息）| **2026-08-16 反转为 `takeover:true`（桥接）**（3.9）。旧决策（原生）在 harness agent 输入框无模型信号的场景下把图片块塞进 pi-ai 文本模型请求，必炸 UNSUPPORTED_CONTENT（会话 41683fc5 实锤）。桥接方向对两种模型都安全：多模态降级为路径文本 + `vision_cloud_tool` 识图 |
 | L5 | 自定义模型能力完全不可解析（`resolveModelInfo` 抛错 + 目录无记录）| 宿主兜底 `takeover:true` 是硬币两面：文本模型受益、多模态模型首次粘贴被误桥接（R3 类）。v2 决策：保留该方向 + 日志记录；如实际出现可加设置项"该模型强制原生/强制桥接"（需观察再定） |
