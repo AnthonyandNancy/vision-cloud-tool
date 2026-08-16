@@ -130,7 +130,7 @@ function fakeClient(initial = '', triggerServices: readonly TriggerService[] = [
     if (services.every(service => ctx[service] !== undefined)) callback(ctx)
   })
   installPasteImages(ctx as never)
-  return {
+  const bench = {
     ctx,
     input,
     registrations,
@@ -494,6 +494,348 @@ describe('clipboard image client', () => {
     const refs = snapshot.occurrences.map(row => row.ref)
     const [serialized] = await Promise.all(refs.map(ref => codec.serialize(ref, new AbortController().signal)))
     expect(serialized).toContain('[Pasted image available at absolute path:')
+    bench.dispose()
+  })
+
+  // ---- A27/A28: URL-only drops/pastes (dragging a bridged tile back) ----
+
+  const TILE_URL = (sessionId: string, name: string) =>
+    `http://127.0.0.1:57631/_dsh/vision-cloud/paste-images/file?sessionId=${sessionId}&name=${encodeURIComponent(name)}`
+
+  function urlDropEvent(urls: string[], text = ''): DragEvent {
+    const event = new Event('drop', { bubbles: true, cancelable: true }) as DragEvent
+    const data = {
+      items: [] as Array<Record<string, unknown>>,
+      files: [] as File[],
+      types: ['text/uri-list', 'text/plain'],
+      getData: (type: string) => type === 'text/uri-list' ? urls.join('\n') : text,
+    }
+    Object.defineProperty(event, 'dataTransfer', { value: data })
+    return event
+  }
+
+  function fetchWith(fileBytes: Record<string, number[] | 'missing'>, takeover: boolean, uploadLeaf: string) {
+    return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url)
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          ok: true,
+          value: { absolutePath: `/workspace/.dsh-vision-cloud/tmp/pasted-images/a/${uploadLeaf}` },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (target.includes('/paste-images/file?')) {
+        const name = new URL(target, 'http://local.test').searchParams.get('name') ?? ''
+        const entry = fileBytes[name]
+        if (entry === undefined || entry === 'missing') return new Response('missing', { status: 404 })
+        return new Response(Uint8Array.from(entry), { status: 200, headers: { 'Content-Type': 'image/png' } })
+      }
+      return new Response(JSON.stringify({ takeover }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+  }
+
+  it('bridges a dropped bridge-URL back into the composer instead of leaking text (A27 drop, no model signal)', async () => {
+    const bench = fakeClient('')
+    const card = document.createElement('div')
+    card.dataset.composerCard = ''
+    const textarea = document.createElement('textarea')
+    card.appendChild(textarea)
+    document.body.appendChild(card)
+    const nativeDrop = vi.fn()
+    textarea.addEventListener('drop', nativeDrop)
+    const name = '746d1eff-1505-4a6a-970c-e35927b0bfc9-moe.png'
+    const request = fetchWith({ [name]: [137, 80, 78, 71] }, true, 're-dropped-tile.png')
+    vi.stubGlobal('fetch', request)
+
+    const event = urlDropEvent([TILE_URL('session-1', name)])
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(nativeDrop).not.toHaveBeenCalled()
+    await flushTasks()
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft).not.toContain('/_dsh/')
+    expect(snapshot.draft).not.toContain('127.0.0.1')
+    expect(snapshot.draft.match(/\uFFFC/gu)).toHaveLength(1)
+    expect(snapshot.occurrences).toHaveLength(1)
+    expect(snapshot.imageIds).toEqual([])
+
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const [serialized] = await Promise.all(snapshot.occurrences.map(row => codec.serialize(row.ref, new AbortController().signal)))
+    expect(serialized).toContain('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/re-dropped-tile.png"]')
+    expect(request.mock.calls.some(([url]) => String(url).includes('/paste-images/file?'))).toBe(true)
+    bench.dispose()
+  })
+
+  it('reuses the uploaded record when the same tile is dropped again (A27 reuse)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    vi.stubGlobal('fetch', fetchWith({}, true, 'drop-01.png'))
+    await armTakeover()
+
+    textarea.dispatchEvent(dropEvent('', [file('drop-01.png', 'image/png', [1])]))
+    await flushTasks()
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const first = bench.input.state.getSnapshot().occurrences
+    expect(first).toHaveLength(1)
+    const [firstSerialized] = await Promise.all(first.map(row => codec.serialize(row.ref, new AbortController().signal)))
+    expect(firstSerialized).toContain('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-01.png"]')
+
+    const fetchNow = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url)
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          ok: true,
+          value: { absolutePath: '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-01.png' },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      if (target.includes('/paste-images/file?')) return new Response('missing', { status: 404 })
+      return new Response(JSON.stringify({ takeover: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchNow)
+
+    const event = urlDropEvent([TILE_URL('session-1', 'drop-01.png')])
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    await flushTasks()
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft.match(/\uFFFC/gu)).toHaveLength(2)
+    const second = snapshot.occurrences.find(row => row.occurrenceId === 2)
+    if (second === undefined) throw new Error('second occurrence was not inserted')
+    const [secondSerialized] = await Promise.all([codec.serialize(second.ref, new AbortController().signal)])
+    expect(secondSerialized).toContain('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-01.png"]')
+    // Reused records resolve without a new download or a second upload POST.
+    expect(fetchNow.mock.calls.some(([url]) => String(url).includes('/paste-images/file?'))).toBe(false)
+    expect(fetchNow.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+    bench.dispose()
+  })
+
+  it('gives a confirmed multimodal model a real image block when a bridged tile is dropped back (A28 native)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    const nativeDrop = vi.fn()
+    textarea.addEventListener('drop', nativeDrop)
+    const name = 'tile.png'
+    vi.stubGlobal('fetch', fetchWith({ [name]: [137, 80, 78, 71] }, false, 'unused.png'))
+    await armTakeover()
+
+    const event = urlDropEvent([TILE_URL('session-1', name)])
+    textarea.dispatchEvent(event)
+
+    // The URL is never released as text, even when the verdict is native.
+    expect(event.defaultPrevented).toBe(true)
+    expect(bench.input.state.getSnapshot().draft).toBe('')
+    await flushTasks()
+    expect(nativeDrop).toHaveBeenCalledTimes(1)
+    const drop = nativeDrop.mock.calls[0]?.[0] as DragEvent | undefined
+    const droppedFiles = drop === undefined ? [] : Array.from(drop.dataTransfer?.files ?? [])
+    expect(droppedFiles).toHaveLength(1)
+    expect(droppedFiles[0]?.name).toBe(name)
+    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
+    bench.dispose()
+  })
+
+  it('notifies instead of leaking text when the tile can no longer be fetched (A28 fallback)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    await armTakeover()
+    vi.stubGlobal('fetch', fetchWith({}, true, 'unused.png'))
+
+    const event = urlDropEvent([TILE_URL('session-1', 'gone.png')])
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    await flushTasks()
+    expect(bench.input.notify).toHaveBeenCalledWith('error', expect.stringContaining('no longer available'))
+    expect(bench.input.state.getSnapshot().draft).toBe('')
+    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
+    bench.dispose()
+  })
+
+  it('leaves ordinary text drops native when the payload has no bridge route (A28c)', () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    const nativeDrop = vi.fn()
+    textarea.addEventListener('drop', nativeDrop)
+
+    const event = urlDropEvent(['https://example.com/not-a-bridge.txt'], 'plain text drag')
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(nativeDrop).toHaveBeenCalledTimes(1)
+    expect(bench.input.state.getSnapshot().draft).toBe('')
+    bench.dispose()
+  })
+
+  it('bridges a pasted bridge-URL instead of leaking text into the draft (A27 paste, no model signal)', async () => {
+    const bench = fakeClient('')
+    const card = document.createElement('div')
+    card.dataset.composerCard = ''
+    const textarea = document.createElement('textarea')
+    card.appendChild(textarea)
+    document.body.appendChild(card)
+    const nativePaste = vi.fn()
+    textarea.addEventListener('paste', nativePaste)
+    const name = 'pasted.png'
+    vi.stubGlobal('fetch', fetchWith({ [name]: [137, 80, 78, 71] }, true, 'pasted-tile.png'))
+
+    const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent
+    Object.defineProperty(event, 'clipboardData', {
+      value: {
+        items: [] as Array<Record<string, unknown>>,
+        files: [] as File[],
+        types: ['text/plain'],
+        getData: () => TILE_URL('session-1', name),
+      },
+    })
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(nativePaste).not.toHaveBeenCalled()
+    await flushTasks()
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft).not.toContain('/_dsh/')
+    expect(snapshot.draft.match(/\uFFFC/gu)).toHaveLength(1)
+    expect(snapshot.occurrences).toHaveLength(1)
+    bench.dispose()
+  })
+
+  // ---- A29: tile drags carrying BOTH files and bridge-route URL text ----
+
+  function fileUrlDropEvent(url: string, files: File[], text = ''): DragEvent {
+    const event = new Event('drop', { bubbles: true, cancelable: true }) as DragEvent
+    const data = {
+      items: files.map(value => ({ kind: 'file', type: value.type, getAsFile: () => value })),
+      files,
+      types: ['text/uri-list', 'text/plain', 'Files'],
+      getData: (type: string) => type === 'text/uri-list' ? url : type === 'text/plain' ? text : '',
+    }
+    Object.defineProperty(event, 'dataTransfer', { value: data })
+    return event
+  }
+
+  function fileUrlPasteEvent(url: string, files: File[], text = ''): ClipboardEvent {
+    const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent
+    const data = {
+      items: files.map(value => ({ kind: 'file', type: value.type, getAsFile: () => value })),
+      files,
+      types: ['text/uri-list', 'text/plain', 'Files'],
+      getData: (type: string) => type === 'text/uri-list' ? url : type === 'text/plain' ? text : '',
+    }
+    Object.defineProperty(event, 'clipboardData', { value: data })
+    return event
+  }
+
+  it('strips the file-route URL out of a tile drag that also carries files (A29 drop)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    const nativeDrop = vi.fn()
+    textarea.addEventListener('drop', nativeDrop)
+    const name = 'e313d5f3-4b06-461d-9032-aef10ff480f8-file.png'
+    vi.stubGlobal('fetch', fetchWith({}, true, 're-uploaded.png'))
+
+    const mark = `url-${name.slice(0, name.lastIndexOf('.'))} [Pasted image available at absolute path: "D:\\\\agentHome\\\\.dsh-vision-cloud\\\\tmp\\\\pasted-images\\\\a\\\\${name}"] ![file.png](<${TILE_URL('session-1', name)}>) ${TILE_URL('session-1', name)}`
+    const event = fileUrlDropEvent(TILE_URL('session-1', name), [file('file.png', 'image/png', [1])], mark)
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(nativeDrop).not.toHaveBeenCalled()
+    await flushTasks()
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft).not.toContain('/_dsh/')
+    expect(snapshot.draft).not.toContain('127.0.0.1')
+    expect(snapshot.draft).not.toContain('url-')
+    expect(snapshot.draft).not.toContain('[pasted image:')
+    expect(snapshot.draft).not.toContain('Pasted image available at absolute path')
+    expect(snapshot.draft.match(/\uFFFC/gu)).toHaveLength(1)
+    expect(snapshot.occurrences).toHaveLength(1)
+    expect(snapshot.imageIds).toEqual([])
+
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const [serialized] = await Promise.all(snapshot.occurrences.map(row => codec.serialize(row.ref, new AbortController().signal)))
+    expect(serialized).toContain('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/re-uploaded.png"]')
+    bench.dispose()
+  })
+
+  it('keeps a real caption while stripping the tile URL (A29 caption)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    vi.stubGlobal('fetch', fetchWith({}, true, 'captioned.png'))
+    await armTakeover()
+
+    const event = fileUrlDropEvent(TILE_URL('session-1', 'tile.png'), [file('file.png', 'image/png', [1])], '帮我看看')
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    await flushTasks()
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft).toContain('帮我看看')
+    expect(snapshot.draft).not.toContain('/_dsh/')
+    expect(snapshot.draft.match(/\uFFFC/gu)).toHaveLength(1)
+    expect(snapshot.occurrences).toHaveLength(1)
+    bench.dispose()
+  })
+
+  it('reuses the uploaded record when a tile drag URL names it (A29 reuse)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    vi.stubGlobal('fetch', fetchWith({}, true, 'drop-01.png'))
+    await armTakeover()
+
+    textarea.dispatchEvent(dropEvent('', [file('drop-01.png', 'image/png', [1])]))
+    await flushTasks()
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const first = bench.input.state.getSnapshot().occurrences
+    expect(first).toHaveLength(1)
+    await Promise.all(first.map(row => codec.serialize(row.ref, new AbortController().signal)))
+
+    const fetchNow = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url)
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          ok: true,
+          value: { absolutePath: '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-01.png' },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ takeover: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchNow)
+
+    // Tile drag: files carry the same image; the text carries the file-route URL.
+    textarea.dispatchEvent(fileUrlDropEvent(TILE_URL('session-1', 'drop-01.png'), [file('file.png', 'image/png', [1])]))
+    await flushTasks()
+
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft).not.toContain('/_dsh/')
+    expect(snapshot.draft.match(/\uFFFC/gu)).toHaveLength(2)
+    expect(snapshot.occurrences).toHaveLength(2)
+    expect(snapshot.occurrences[1]?.ref).toBe(snapshot.occurrences[0]?.ref)
+    expect(fetchNow.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+    bench.dispose()
+  })
+
+  it('strips the URL out of a tile paste that also carries files (A29 paste)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    const nativePaste = vi.fn()
+    textarea.addEventListener('paste', nativePaste)
+    vi.stubGlobal('fetch', fetchWith({}, true, 'pasted-tile.png'))
+    await armTakeover()
+
+    const event = fileUrlPasteEvent(TILE_URL('session-1', 'pasted-name.png'), [file('file.png', 'image/png', [1])])
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(nativePaste).not.toHaveBeenCalled()
+    await flushTasks()
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft).not.toContain('/_dsh/')
+    expect(snapshot.draft.match(/\uFFFC/gu)).toHaveLength(1)
+    expect(snapshot.occurrences).toHaveLength(1)
     bench.dispose()
   })
 

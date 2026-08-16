@@ -209,6 +209,9 @@ Get-ChildItem -Recurse .dsh-vision-cloud\tmp\pasted-images -File | Select-Object
 | A24 | 阴影视图复刻产品气泡：原生图 loadImage 渲染/重试/灯箱、引用芯片、JsonBlock、复制/时间（3.8） | `user-message-view.spec.ts` 新文件 | ✅ |
 | A25 | 无模型信号（harness agent 输入框无模型选择器）paste/drop → **text-safe 桥接**而非原生放行（3.9） | `paste-images-client.spec.ts` | ✅ |
 | A26 | `syncTakeover` 无信号返回 `undefined`（挂起）而非 `false`（原生放行）——3.9 核心回归 | `paste-images-client.spec.ts`（A25 两用例覆盖） | ✅ |
+| A27 | 桥接 tile URL-only drop 再物化：preventDefault + 裁决链，绝不文本泄露（3.10） | `paste-images-client.spec.ts` | ✅ |
+| A28 | URL-only paste 同 3.10 链；跨插件普通文本放行（3.10） | `paste-images-client.spec.ts` | ✅ |
+| A29 | 文件+URL 混合 payload（tile 拖回带 files）清洗：URL 进不了草稿、同名 record 复用（3.11） | `paste-images-client.spec.ts` | ✅ |
 
 ### 3.1 宿主裁决优先级（修复①②，A3/A4）— 追加到 `tests/paste-images.spec.ts`
 
@@ -411,6 +414,53 @@ it('keeps the URL/path exception for image-capable models', () => {
 **为何可推翻 L4**：留原生只在"确认多模态"时有收益；无信号时原生放行对 pi-ai 文本模型是**必炸**
 （UNSUPPORTED_CONTENT），而桥接降级只是让（可能的）多模态模型拿到路径文本——识图由
 `vision_cloud_tool` 保证，对显示层阴影渲染器照样出大图。桌面端有完整模型信号的路径完全不变。
+
+---
+
+### 3.10 桥接 tile 拖回输入框：URL-only drop/paste 再物化（A27/A28）— 2026-08-16 harness 实锤
+
+> **事故**（2026-08-16 11:0x，harness agent GUI，会话日志 `agentHome/b98c935b`）：用户把已发送气泡里的
+> 桥接图片 tile **拖回输入框**。这类拖拽浏览器**不带 `files`**，payload 只有（浏览器绝对化后的）文件路由
+> URL 文本（`http://127.0.0.1:57631/_dsh/vision-cloud/paste-images/file?sessionId=...&name=...`）。旧代码
+> `files.length === 0 → return false`（不 preventDefault）→ 原生文本域把 URL + 相邻的路径标注 + markdown
+> 整段按普通文本塞进草稿 → 发送后消息 = 纯文本 → 气泡泄露裸标注（路径行 + `![...](<route>)`），与桌面端
+> （拖 tile 前的气泡正常显示大图）行为不一致。日志实锤：该消息内容为单一 text 块，无任何图片块。
+>
+> 附带观察：同批消息里有一条 CJK 文本出现乱码（"什么应用"→ `ʲôӦ`），同样经 URL-drop 原生文本路径——本节修复拦截后该路径不复存在；若其它入口仍能触发，另行排查 harness 消息管线编码。
+
+**修改**（全部在 `src/client/paste-images.tsx` + `tests/paste-images-client.spec.ts`）：
+
+1. `bridgeRefsFromPayload`：files 为空时扫描 `dataTransfer`/`clipboardData` 的 `text/uri-list` 等全部 flavor，命中 `/_dsh/vision-cloud/paste-images/file?...` 路由（含浏览器绝对化 URL、markdown 包裹形式）→ 解析 `sessionId` + `name`；
+2. `handleDrop`/`handlePaste`：命中时一律 `preventDefault`（URL/标注文本**永不落入草稿**），再走同一 verdict 链：
+   - 确认多模态 → `fetchBridgeFile` 从会话授权 file 路由取回字节 → `releaseNatively` 插**真实图片块**（直连视觉 + 原生气泡，与拖新图一致）；
+   - 文本/无信号/裁决不可得 → `bridgeDroppedRefs`：优先复用同一标签页已上传的同名 record（`findUploadedRecord`，零下载零重传）；否则下载字节按普通 File 桥接（serialize 时重新落盘）。fetch 失败 → 一次性 notify，绝不回退成文本；
+3. 非本插件路由的普通文本 drop/paste 继续放行原生（不误伤从文档拖文本）。
+
+---
+
+### 3.11 tile 拖回输入框：文件+URL 混合 payload 的文本清洗与 record 复用（A29）— 2026-08-16 harness 实锤
+
+> **事故**（2026-08-16，harness agent GUI，会话 `session-b98c935b`，端口 49996）：3.10 修复后再次观察到曝光
+> 事件——把消息里的桥接图片 tile 拖回输入框，草稿还是出现了
+> `http://127.0.0.1:49996/_dsh/vision-cloud/paste-images/file?sessionId=...&name=<uuid>-file.png [pasted image: file.png]`
+> 的裸文本。会话日志实锤：本次拖拽的 payload **既带 `files`（host 把图片物化为通用 `File('file.png')`），
+> 又在拖拽文本里放了文件路由 URL**（`url-<uuid> + [Pasted image…] + ![file.png](<route>) + route`）。
+> 3.10 的 `bridgeRefsFromPayload` 只处理 `files.length === 0` 的 URL-only 形态；files 分支把原始拖拽文本
+> 透传进桥接草稿 → URL 泄露。**这是 payload 形态设想的第二次修正：tile 拖回 =「File + URL 文本」双轨。**
+
+**修改**（`src/client/paste-images.tsx` + `tests/paste-images-client.spec.ts`）：
+
+1. `sanitizeBridgeText`：URL-only 与 files 分支共用的文本清洗器。当文本包含 `/_dsh/vision-cloud/paste-images/file?` 时，
+   剥掉所有桥接标记——markdown 图片 + 裸 file-route URL（含浏览器绝对化）、绝对/相对路径标注行、
+   `[pasted image: …]` 芯片标签、host 物化标记 `url-<uuid>[-name][.ext]`——只留真正的用户文本（如「帮我看看」）；
+2. `finishPayload`：files 分支统一入口。清洗后若只剩「1 file + 1 匹配 ref + 空文本」，直接
+   `findUploadedRecord(refs[0])` 复用本标签页已上传的同名 record（`insertExistingRefs`，零重传）；否则
+   `finishBridge` 走常规上传。复用键 = URL `name` 参数（如 `e313d5f3-…-file.png`），**不是** payload 的
+   File 名（`file.png`）——拖回物化时文件名已泛化；
+3. `bridgeRefsFromPayload` 在 paste 与 drop 两处无条件计算（命中才进入 refs 分支，files 分支拿到 `refs` 供复用判定）；`settlePaste` 同步携带 `refs`。
+
+**回归红线**（A29 四用例）：URL/标注/`url-` 标记在 files 共存时也不得进入草稿；带真实文字的 tile
+拖回保留文字 + 单引用；同 label 二次拖回零 POST；file+URL paste 与 drop 同等待遇。
 
 ---
 

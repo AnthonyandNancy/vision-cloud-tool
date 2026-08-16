@@ -79,12 +79,30 @@ export declare class PasteImageController {
     recordsFor(occurrences: readonly PasteOccurrence[]): PasteRecord[];
     private inputFor;
     private insertText;
+    /** One batch's cleanup: drop records once every occurrence referencing them is gone. */
+    private bindBatchCleanup;
+    /**
+     * Insert object references for resolved records at `cursor`. `owned` lists
+     * the records created by THIS insertion (rolled back and dropped on
+     * failure); records reused from earlier uploads survive a failed insert.
+     */
+    private insertExistingRefs;
     private insertRecords;
     /**
      * Insert the held paste through the paste-to-path bridge. Shared by the
      * cached-true fast path and the async hold-and-decide settle (GA3).
      */
     private finishBridge;
+    /**
+     * Bridge a held payload that may mix files with bridge-route URL text
+     * (dragging a bridged tile: DSH materializes the image as a File and puts
+     * its file-route URL into the drag text). The text is sanitized HERE so
+     * the URL never reaches the draft; when the payload comes down to one
+     * file whose URL names an upload this tab still owns, that record is
+     * reused instead of uploading a duplicate copy (agentHome b98c935b,
+     * 2026-08-16).
+     */
+    private finishPayload;
     /** Notify once per retry window that the bridge is unreachable (GA20). */
     private notifyBridgeDown;
     /**
@@ -99,6 +117,21 @@ export declare class PasteImageController {
     handlePaste(event: ClipboardEvent): boolean;
     handleDrop(event: DragEvent): boolean;
     remove(sessionId: string, occurrence: PasteOccurrence): void;
+    /** A same-tab record whose uploaded workspace file is the dropped one. */
+    private findUploadedRecord;
+    /** Download one bridged image back over the session-authorized file route. */
+    private fetchBridgeFile;
+    /**
+     * Re-materialize bridge file-route URLs as text-safe references: reuse a
+     * same-tab uploaded record, otherwise download the bytes and treat them as
+     * a fresh File (the ordinary bridge copies it at serialize time). The
+     * dropped URL text itself is NEVER written into the draft.
+     */
+    private bridgeDroppedRefs;
+    /** Multimodal verdict: give the model a real image block, not path text. */
+    private materializeNativeDroppedRefs;
+    /** Held URL payload: verdict false → native block; true/unavailable → bridge. */
+    private settleDroppedRefs;
     private upload;
     private serialize;
 }
