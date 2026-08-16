@@ -40,13 +40,39 @@ export declare class PasteImageController {
     snapshot: () => number;
     private changed;
     private readonly VERDICT_MAX_AGE_MS;
+    private readonly VERDICT_RETRY_MS;
     private verdicts;
     private routeAvailable;
-    /** Best-effort current model selector label (the host owns the real verdict). */
+    private routeRetryAt;
+    private replaying;
+    private lastBridgeNoticeAt;
+    private readonly subscribedDirectories;
+    /** Best-effort current model selector label (used only without modelDirectories). */
     private currentModelLabel;
+    private modelDirectoriesService;
+    /**
+     * The composer's current model selection, freshest source first:
+     * the live model-selection store (exact provider/model) followed by the
+     * DOM selector label as a legacy fallback (subagent sessions throw here).
+     */
+    private currentPick;
+    /** Flush cached verdicts and prefetch on selection changes (one per session). */
+    private subscribeDirectory;
+    private flushVerdicts;
+    private verdictKey;
+    /**
+     * Fetch the takeover verdict for one selection. Resolves the effective
+     * takeover (`true` = bridge, `false` = native) or `undefined` when the
+     * verdict could not be obtained (fetch failure, route down, rate-limited
+     * retry window) — callers then apply the text-safe bridge fallback (GA20).
+     */
     private refreshVerdict;
-    /** Take over paste/drop only when the host confirmed a text-only model. */
-    private shouldTakeover;
+    /**
+     * Cached takeover for the current selection: `true`/`false` only for a
+     * fresh verdict; `undefined` (or a stale/empty signal) leaves the event
+     * held for the async decide-then-act flow.
+     */
+    private syncTakeover;
     /** Prefetch the paste/drop takeover verdict (called on composer focus/drag enter). */
     prefetch(): void;
     source(): InputTriggerSource;
@@ -54,6 +80,22 @@ export declare class PasteImageController {
     private inputFor;
     private insertText;
     private insertRecords;
+    /**
+     * Insert the held paste through the paste-to-path bridge. Shared by the
+     * cached-true fast path and the async hold-and-decide settle (GA3).
+     */
+    private finishBridge;
+    /** Notify once per retry window that the bridge is unreachable (GA20). */
+    private notifyBridgeDown;
+    /**
+     * Release the held event natively for a confirmed multimodal model.
+     * Preferred: the conversation service's public image-draft API so the
+     * attachment rail updates exactly like a trusted paste (GA21). Fallback:
+     * one untrusted synthetic replay of the same event (guarded against
+     * reentrancy); this degrades silently if the app gates on isTrusted.
+     */
+    private releaseNatively;
+    private settlePaste;
     handlePaste(event: ClipboardEvent): boolean;
     handleDrop(event: DragEvent): boolean;
     remove(sessionId: string, occurrence: PasteOccurrence): void;

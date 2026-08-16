@@ -10,7 +10,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { type SettingsDescriptor } from '@deepseek-ai/dsh-settings'
 // Type-only import activates the optional webServer Context declaration.
 import type {} from '@deepseek-ai/dsh-host-webserver'
-import { PastedImageBackend, PASTE_IMAGES_ROUTE } from './paste-images.ts'
+import { PastedImageBackend, PASTE_IMAGE_FILE_ROUTE, PASTE_IMAGES_ROUTE } from './paste-images.ts'
 import {
   resolveConfig,
   VISION_TOOLKIT_SETTINGS_NAMESPACE,
@@ -285,7 +285,13 @@ export function installVisionToolkitWeb(
         path: PASTE_IMAGES_ROUTE,
         handler: (req, res) => pastedImages.handle(req, res),
       })
+      const disposePasteImageFile = webCtx.webServer.register({
+        kind: 'exact',
+        path: PASTE_IMAGE_FILE_ROUTE,
+        handler: (req, res) => pastedImages.handle(req, res),
+      })
       return () => {
+        disposePasteImageFile()
         disposePasteImages()
         disposeSettings()
       }

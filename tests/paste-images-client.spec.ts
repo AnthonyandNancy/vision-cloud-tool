@@ -43,7 +43,9 @@ function inputMachine(initial = '') {
       },
     },
     setDraft: vi.fn((draft: string) => {
-      const occurrences = state.occurrences.filter(occurrence => draft[occurrence.offset] === '\uFFFC')
+      const positions: number[] = []
+      for (let index = 0; index < draft.length; index += 1) if (draft[index] === '\uFFFC') positions.push(index)
+      const occurrences = state.occurrences.slice(0, positions.length).map((row, index) => ({ ...row, offset: positions[index] }))
       publish({ ...state, draft, draftRev: state.draftRev + 1, occurrences })
     }),
     insertReference: vi.fn((reference: Omit<Occurrence, 'occurrenceId' | 'offset'>, span: { start: number; end: number; draftRev: number }) => {
@@ -56,6 +58,10 @@ function inputMachine(initial = '') {
         draftRev: state.draftRev + 1,
         occurrences: [...shifted, occurrence].sort((a, b) => a.offset - b.offset),
       })
+      return true
+    }),
+    addImages: vi.fn((ids: string[]) => {
+      publish({ ...state, imageIds: [...state.imageIds, ...ids] })
       return true
     }),
     insertText: vi.fn((text: string, span: { start: number; end: number; draftRev: number }) => {
@@ -74,7 +80,9 @@ function inputMachine(initial = '') {
 
 type TriggerService = 'slash' | 'inputTriggers'
 
-function fakeClient(initial = '', triggerServices: readonly TriggerService[] = ['slash'], aliasTriggers = false) {
+const benches: Array<() => void> = []
+
+function fakeClient(initial = '', triggerServices: readonly TriggerService[] = ['slash'], aliasTriggers = false, extras: Record<string, unknown> = {}) {
   const input = inputMachine(initial)
   const effects: Array<() => void> = []
   const registrations: Array<{
@@ -113,6 +121,7 @@ function fakeClient(initial = '', triggerServices: readonly TriggerService[] = [
       const dispose = setup()
       if (typeof dispose === 'function') effects.push(dispose)
     }),
+    get: vi.fn((name: string) => extras[name]),
   }
   for (const service of triggerServices) {
     ctx[service] = aliasTriggers ? triggerRegistries.slash : triggerRegistries[service]
@@ -133,8 +142,12 @@ function fakeClient(initial = '', triggerServices: readonly TriggerService[] = [
       effects[index] = () => {}
       dispose()
     },
-    dispose: () => effects.reverse().forEach(fn => { fn() }),
+    dispose: () => {
+      for (const fn of effects.splice(0).reverse()) fn()
+    },
   }
+  benches.push(bench.dispose)
+  return bench
 }
 
 function file(name: string, type: string, bytes: number[]): File {
@@ -183,6 +196,11 @@ async function armTakeover(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 10))
 }
 
+/** Drain pending microtasks so held paste settlements can run to completion. */
+async function flushTasks(times = 8): Promise<void> {
+  for (let count = 0; count < times; count += 1) await Promise.resolve()
+}
+
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
     if (init?.method === 'POST') {
@@ -196,6 +214,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  for (const dispose of benches.splice(0)) dispose()
   document.body.replaceChildren()
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -332,8 +351,8 @@ describe('clipboard image client', () => {
     expect(request).toHaveBeenCalledTimes(2)
     expect(request.mock.calls.every(([url]) => String(url).startsWith('/_dsh/vision-cloud/paste-images?'))).toBe(true)
     expect(serialized).toEqual([
-      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-01.png"]',
-      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-02.webp"]',
+      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-01.png"]\n\n![one.png](</_dsh/vision-cloud/paste-images/file?sessionId=session-1&name=image-01.png>)',
+      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-02.webp"]\n\n![two.webp](</_dsh/vision-cloud/paste-images/file?sessionId=session-1&name=image-02.webp>)',
     ])
     bench.dispose()
   })
@@ -379,8 +398,8 @@ describe('clipboard image client', () => {
     expect(request).toHaveBeenCalledTimes(2)
     expect(request.mock.calls.every(([url]) => String(url).startsWith('/_dsh/vision-cloud/paste-images?'))).toBe(true)
     expect(serialized).toEqual([
-      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-01.png"]',
-      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-02.webp"]',
+      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-01.png"]\n\n![one.png](</_dsh/vision-cloud/paste-images/file?sessionId=session-1&name=drop-01.png>)',
+      '[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/drop-02.webp"]\n\n![two.webp](</_dsh/vision-cloud/paste-images/file?sessionId=session-1&name=drop-02.webp>)',
     ])
     bench.dispose()
   })
@@ -553,11 +572,11 @@ describe('clipboard image client', () => {
     expect(request).toHaveBeenCalledTimes(3)
     const names = request.mock.calls.map(([url]) => new URL(String(url), 'http://localhost').searchParams.get('name'))
     expect(names).toEqual(['one.png', 'two.png', 'two.png'])
-    expect(secondText).toBe('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/retried-two.png"]')
+    expect(secondText).toBe('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/retried-two.png"]\n\n![two.png](</_dsh/vision-cloud/paste-images/file?sessionId=session-1&name=retried-two.png>)')
 
     const firstText = await codec.serialize(first.ref, new AbortController().signal)
     expect(request).toHaveBeenCalledTimes(3)
-    expect(firstText).toBe('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/stable-one.png"]')
+    expect(firstText).toBe('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/stable-one.png"]\n\n![one.png](</_dsh/vision-cloud/paste-images/file?sessionId=session-1&name=stable-one.png>)')
     bench.dispose()
   })
 
@@ -593,5 +612,283 @@ describe('clipboard image client', () => {
     expect(bench.input.state.getSnapshot().occurrences).toEqual([])
     expect(controller.recordsFor([occurrence])).toEqual([])
     bench.dispose()
+  })
+
+  it('sends the exact provider/model pair from the live model-selection store and refetches on selection changes (A2)', async () => {
+    let current: { provider: string; model: string } | null = { provider: 'abrdns', model: 'DeepSeek-V4-Pro-0813' }
+    const listeners = new Set<() => void>()
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current }),
+        subscribe: (listener: () => void) => {
+          listeners.add(listener)
+          return () => { listeners.delete(listener) }
+        },
+      },
+    }
+    const bench = fakeClient('', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+    })
+    composer()
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ takeover: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await armTakeover()
+    const paramsOf = (index: number) => new URL(String(fetchMock.mock.calls[index]?.[0]), 'http://localhost').searchParams
+    expect(paramsOf(0).get('provider')).toBe('abrdns')
+    expect(paramsOf(0).get('model')).toBe('DeepSeek-V4-Pro-0813')
+    expect(paramsOf(0).get('sessionId')).toBe('session-1')
+
+    current = { provider: 'abrdns', model: 'Qwen3.8-Max' }
+    for (const listener of listeners) listener()
+    await flushTasks()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(paramsOf(1).get('provider')).toBe('abrdns')
+    expect(paramsOf(1).get('model')).toBe('Qwen3.8-Max')
+
+    // The refreshed verdict cache now decides for the NEW selection.
+    const textarea = document.querySelector<HTMLTextAreaElement>('[data-composer-card] textarea')
+    if (textarea === null) throw new Error('composer textarea missing')
+    textarea.dispatchEvent(clipboardEvent('', [file('one.png', 'image/png', [1])]))
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+    bench.dispose()
+  })
+
+  it('falls back to the DOM selector label when modelDirectories rejects the session (A2b/E21)', async () => {
+    const bench = fakeClient('', ['slash'], false, {
+      modelDirectories: { directoryFor: () => { throw new Error('subagent composer') } },
+    })
+    composer()
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ takeover: false }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await armTakeover()
+    const params = new URL(String(fetchMock.mock.calls[0]?.[0]), 'http://localhost').searchParams
+    expect(params.has('provider')).toBe(false)
+    expect(params.get('model')).toContain('DeepSeek-V4-Flash')
+    bench.dispose()
+  })
+
+  it('holds an undecided paste, then releases it natively when the verdict arrives false (A18)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    const nativePaste = vi.fn()
+    textarea.addEventListener('paste', nativePaste)
+    let resolveVerdict: (body: { takeover: boolean }) => void = () => {}
+    const fetchMock = vi.fn(async () => {
+      const body = await new Promise<{ takeover: boolean }>(resolve => { resolveVerdict = resolve })
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const event = clipboardEvent('caption', [file('one.png', 'image/png', [1])])
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true) // held before any verdict
+    expect(nativePaste).not.toHaveBeenCalled()
+    expect(bench.input.state.getSnapshot().draft).toBe('')
+    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    resolveVerdict({ takeover: false })
+    await flushTasks()
+
+    expect(nativePaste).toHaveBeenCalledTimes(1)
+    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
+    const replayed = nativePaste.mock.calls[0]?.[0] as ClipboardEvent
+    expect(replayed.clipboardData?.getData('text/plain')).toBe('caption')
+    expect(replayed.clipboardData?.files[0]?.name).toBe('one.png')
+    bench.dispose()
+  })
+
+  it('holds an undecided paste, then bridges it when the verdict arrives true (A19)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    const nativePaste = vi.fn()
+    textarea.addEventListener('paste', nativePaste)
+    let resolveVerdict: (body: { takeover: boolean }) => void = () => {}
+    const fetchMock = vi.fn(async () => {
+      const body = await new Promise<{ takeover: boolean }>(resolve => { resolveVerdict = resolve })
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const event = clipboardEvent('caption', [file('one.png', 'image/png', [1])])
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
+
+    resolveVerdict({ takeover: true })
+    await flushTasks()
+
+    expect(nativePaste).not.toHaveBeenCalled()
+    expect(bench.input.state.getSnapshot().draft).toContain('caption')
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+    bench.dispose()
+  })
+
+  it('bridges text-safe and notifies once when the verdict fetch fails (A20)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('bridge unreachable') }))
+
+    textarea.dispatchEvent(clipboardEvent('', [file('one.png', 'image/png', [1])]))
+    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
+    await flushTasks()
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+    expect(bench.input.notify).toHaveBeenCalledTimes(1)
+    expect(String(bench.input.notify.mock.calls[0]?.[1])).toContain('bridge is temporarily unreachable')
+
+    textarea.dispatchEvent(clipboardEvent('', [file('two.png', 'image/png', [2])]))
+    await flushTasks()
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(2)
+    expect(bench.input.notify).toHaveBeenCalledTimes(1) // one-time notice per retry window
+    bench.dispose()
+  })
+
+  it('prefers the public image-draft API over synthetic replay when releasing natively (A21)', async () => {
+    const createDraftImages = vi.fn((files: readonly File[]) => files.map(file => ({ id: `draft-${file.name}` })))
+    const bench = fakeClient('', ['slash'], false, {
+      conversation: { createDraftImages },
+    })
+    const textarea = composer()
+    const nativePaste = vi.fn()
+    textarea.addEventListener('paste', nativePaste)
+    let resolveVerdict: (body: { takeover: boolean }) => void = () => {}
+    const fetchMock = vi.fn(async () => {
+      const body = await new Promise<{ takeover: boolean }>(resolve => { resolveVerdict = resolve })
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    textarea.dispatchEvent(clipboardEvent('caption', [file('one.png', 'image/png', [1])]))
+    resolveVerdict({ takeover: false })
+    await flushTasks()
+
+    expect(createDraftImages).toHaveBeenCalledTimes(1)
+    expect(bench.input.addImages).toHaveBeenCalledWith(['draft-one.png'])
+    expect(bench.input.state.getSnapshot().imageIds).toEqual(['draft-one.png'])
+    expect(bench.input.state.getSnapshot().draft).toBe('caption')
+    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
+    expect(nativePaste).not.toHaveBeenCalled()
+    bench.dispose()
+  })
+
+  it('keeps the conversation receiver bound when admitting draft images (A21b)', async () => {
+    let receiver: unknown
+    const conversation = {
+      createDraftImages: function (this: unknown, files: readonly File[]) {
+        receiver = this
+        return files.map(value => ({ id: `draft-${value.name}` }))
+      },
+    }
+    const bench = fakeClient('', ['slash'], false, { conversation })
+    const textarea = composer()
+    const nativePaste = vi.fn()
+    textarea.addEventListener('paste', nativePaste)
+    let resolveVerdict: (body: { takeover: boolean }) => void = () => {}
+    const fetchMock = vi.fn(async () => {
+      const body = await new Promise<{ takeover: boolean }>(resolve => { resolveVerdict = resolve })
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    textarea.dispatchEvent(clipboardEvent('caption', [file('one.png', 'image/png', [1])]))
+    resolveVerdict({ takeover: false })
+    await flushTasks()
+
+    // The draft-admission method reads internal state off its receiver;
+    // a detached call would run with `this === undefined` and throw.
+    expect(receiver).toBe(conversation)
+    expect(bench.input.addImages).toHaveBeenCalledWith(['draft-one.png'])
+    expect(bench.input.state.getSnapshot().draft).toBe('caption')
+    expect(nativePaste).not.toHaveBeenCalled()
+    bench.dispose()
+  })
+
+  it('registers priority -1 shadows for the user and steering chat-node keys', () => {
+    const bench = fakeClient('')
+    const shadows = bench.registrations.filter(row => row.options.name === 'conversation.chat.node')
+    expect(shadows.map(row => row.options.key)).toEqual(['user', 'steering'])
+    for (const row of shadows) {
+      expect(row.options.priority).toBe(-1)
+      expect(row.options.locale).toBe('conversation')
+    }
+    bench.dispose()
+  })
+
+  it('retries the verdict route after a 404 instead of disabling it forever (A17)', async () => {
+    vi.useFakeTimers()
+    try {
+      const bench = fakeClient('')
+      const textarea = composer()
+      let down = true
+      const fetchMock = vi.fn(async () => down
+        ? new Response(JSON.stringify({ error: 'no bridge' }), { status: 404 })
+        : new Response(JSON.stringify({ takeover: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      vi.stubGlobal('fetch', fetchMock)
+      const paste = (name: string) => { textarea.dispatchEvent(clipboardEvent('', [file(name, 'image/png', [1])])) }
+
+      paste('first.png')
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      await flushTasks()
+      expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+
+      paste('second.png')
+      await flushTasks()
+      expect(fetchMock).toHaveBeenCalledTimes(1) // inside the retry window
+      expect(bench.input.state.getSnapshot().occurrences).toHaveLength(2)
+
+      down = false
+      await vi.advanceTimersByTimeAsync(31_000)
+      paste('third.png')
+      await flushTasks()
+      expect(fetchMock).toHaveBeenCalledTimes(2) // probe recovered the route
+      expect(bench.input.state.getSnapshot().occurrences).toHaveLength(3)
+      bench.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('renders a blob thumbnail per dock chip and revokes it on unmount (A10)', async () => {
+    const createObjectURL = vi.fn(() => 'blob:preview')
+    const revokeObjectURL = vi.fn()
+    Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, configurable: true })
+    Object.defineProperty(URL, 'revokeObjectURL', { value: revokeObjectURL, configurable: true })
+    try {
+      const bench = fakeClient('')
+      const textarea = composer()
+      await armTakeover()
+      textarea.dispatchEvent(clipboardEvent('', [file('one.png', 'image/png', [1])]))
+      const dock = bench.registrations.find(row => row.options.id === 'vision-cloud-pasted-images')
+      if (dock === undefined) throw new Error('paste dock was not registered')
+      const injected = (dock.options.inject as ((sessionId: string) => {
+        controller: PasteImageController
+        remove: (row: Occurrence) => void
+      }))('session-1')
+
+      const { container, unmount } = render(createElement(dock.component, {
+        input: bench.input.state.getSnapshot(),
+        ...injected,
+      }))
+      const thumb = container.querySelector('img.dvt-paste-thumb')
+      expect(thumb?.getAttribute('src')).toBe('blob:preview')
+      expect(createObjectURL).toHaveBeenCalledTimes(1)
+
+      unmount()
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview')
+      bench.dispose()
+    } finally {
+      delete (URL as { createObjectURL?: unknown; revokeObjectURL?: unknown }).createObjectURL
+      delete (URL as { createObjectURL?: unknown; revokeObjectURL?: unknown }).revokeObjectURL
+    }
   })
 })

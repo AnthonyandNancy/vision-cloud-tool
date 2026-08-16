@@ -55,18 +55,14 @@ describe('vision_cloud_tool URL media guard', () => {
   })
 
   it('rejects a JSON API endpoint by content-type without reading its body when extensionless URLs are enabled', async () => {
-    let bodyRead = false
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        bodyRead = true
-        controller.enqueue(new TextEncoder().encode('{"object":"list","data":[]}'))
-        controller.close()
-      },
-    })
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    })))
+    let response: Response | undefined
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      response = new Response('{"object":"list","data":[]}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+      return response
+    }))
 
     await expect(runtime(true).read(
       { images: ['https://new-api.abrdns.com/v1/models'], attachments: [] },
@@ -74,7 +70,8 @@ describe('vision_cloud_tool URL media guard', () => {
       options(),
     )).rejects.toMatchObject({ code: 'input' })
 
-    expect(bodyRead).toBe(false)
+    expect(response).toBeDefined()
+    expect(response?.bodyUsed).toBe(false)
   })
 
   it('rejects video URL extensions before any network request', async () => {
@@ -91,18 +88,14 @@ describe('vision_cloud_tool URL media guard', () => {
   })
 
   it('rejects video content types without reading the body', async () => {
-    let bodyRead = false
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        bodyRead = true
-        controller.enqueue(new Uint8Array([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]))
-        controller.close()
-      },
-    })
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, {
-      status: 200,
-      headers: { 'content-type': 'video/mp4' },
-    })))
+    let response: Response | undefined
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      response = new Response(new Uint8Array([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70]), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4' },
+      })
+      return response
+    }))
 
     await expect(runtime(true).read(
       { images: ['https://example.com/media/signed-stream'], attachments: [] },
@@ -110,7 +103,8 @@ describe('vision_cloud_tool URL media guard', () => {
       options(),
     )).rejects.toMatchObject({ code: 'input' })
 
-    expect(bodyRead).toBe(false)
+    expect(response).toBeDefined()
+    expect(response?.bodyUsed).toBe(false)
   })
 
   it('rejects local video files before reading their bytes', async () => {

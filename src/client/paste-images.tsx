@@ -1,10 +1,11 @@
 /** Clipboard and drag-and-drop multi-image input for DSH Web. */
 
-import { useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useSyncExternalStore, useState, type ReactNode } from 'react'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import { UserMessageNodeShadow } from './user-message-view.tsx'
 
 const SOURCE = 'vision-cloud-pasted-image'
 export const PASTE_IMAGES_ROUTE = '/_dsh/vision-cloud/paste-images'
@@ -39,6 +40,28 @@ interface PasteOccurrence {
   source: string
   ref: string
   offset: number
+  label: string
+}
+
+interface VerdictEntry {
+  takeover?: boolean | undefined
+  at: number
+  pending: boolean
+  task?: Promise<boolean | undefined> | undefined
+}
+
+interface ModelDirectoryStore {
+  getSnapshot(): { current?: { provider?: string; model?: string } | null }
+  subscribe(listener: () => void): () => void
+}
+
+interface ModelDirectoriesService {
+  directoryFor(sessionId: string): { store: ModelDirectoryStore } | undefined
+}
+
+interface ModelPick {
+  provider?: string | undefined
+  model?: string | undefined
   label: string
 }
 
@@ -148,10 +171,15 @@ export class PasteImageController {
   }
 
   private readonly VERDICT_MAX_AGE_MS = 60000
-  private verdicts = new Map<string, { takeover: boolean; at: number; pending: boolean }>()
+  private readonly VERDICT_RETRY_MS = 30000
+  private verdicts = new Map<string, VerdictEntry>()
   private routeAvailable = true
+  private routeRetryAt = 0
+  private replaying = false
+  private lastBridgeNoticeAt = 0
+  private readonly subscribedDirectories = new Set<string>()
 
-  /** Best-effort current model selector label (the host owns the real verdict). */
+  /** Best-effort current model selector label (used only without modelDirectories). */
   private currentModelLabel(): string {
     const buttons = document.querySelectorAll('button[aria-label]')
     for (const button of buttons) {
@@ -161,46 +189,138 @@ export class PasteImageController {
     return ''
   }
 
-  private refreshVerdict(label: string): void {
-    if (!this.routeAvailable || label === '') return
-    const cached = this.verdicts.get(label)
-    if (cached?.pending) return
-    const entry = { pending: true, takeover: cached?.takeover ?? false, at: cached?.at ?? 0 }
-    this.verdicts.set(label, entry)
-    fetch(`${PASTE_IMAGES_ROUTE}?model=${encodeURIComponent(label)}`)
-      .then((res) => {
-        if (res.status === 404) {
-          this.routeAvailable = false
-          entry.pending = false
-          return null
-        }
-        if (!res.ok) throw new Error(`policy ${res.status}`)
-        return res.json() as Promise<{ takeover?: unknown }>
-      })
-      .then((body) => {
-        entry.pending = false
-        if (body) {
-          entry.takeover = body.takeover === true
-          entry.at = Date.now()
-        }
-      })
-      .catch(() => { entry.pending = false })
+  private modelDirectoriesService(): ModelDirectoriesService | undefined {
+    const ctx = this.ctx as ClientContext & { get?: (name: string) => unknown }
+    const service = typeof ctx.get === 'function' ? ctx.get('modelDirectories') : undefined
+    if (service === undefined || typeof (service as ModelDirectoriesService).directoryFor !== 'function') return undefined
+    return service as ModelDirectoriesService
   }
 
-  /** Take over paste/drop only when the host confirmed a text-only model. */
-  private shouldTakeover(): boolean {
-    const label = this.currentModelLabel()
-    const cached = this.verdicts.get(label)
-    if (!cached || cached.pending || cached.at === 0 || Date.now() - cached.at > this.VERDICT_MAX_AGE_MS) {
-      this.refreshVerdict(label)
-      return false
+  /**
+   * The composer's current model selection, freshest source first:
+   * the live model-selection store (exact provider/model) followed by the
+   * DOM selector label as a legacy fallback (subagent sessions throw here).
+   */
+  private currentPick(sessionId: string): ModelPick {
+    const service = this.modelDirectoriesService()
+    if (service !== undefined) {
+      try {
+        const directory = service.directoryFor(sessionId)
+        if (directory?.store) {
+          this.subscribeDirectory(sessionId, directory.store)
+          const current = directory.store.getSnapshot().current
+          if (current !== null && current !== undefined
+            && typeof current.provider === 'string' && typeof current.model === 'string'
+            && current.provider !== '' && current.model !== '') {
+            return { provider: current.provider, model: current.model, label: current.model }
+          }
+        }
+      } catch {
+        // Subagent composers or unknown scopes: fall back to the DOM label.
+      }
     }
-    return cached.takeover
+    return { label: this.currentModelLabel() }
+  }
+
+  /** Flush cached verdicts and prefetch on selection changes (one per session). */
+  private subscribeDirectory(sessionId: string, store: ModelDirectoryStore): void {
+    if (this.subscribedDirectories.has(sessionId)) return
+    this.subscribedDirectories.add(sessionId)
+    if (typeof store.subscribe !== 'function') return
+    try {
+      store.subscribe(() => {
+        this.flushVerdicts(sessionId)
+        this.prefetch()
+      })
+    } catch {
+      // Keep the DOM label fallback when the store rejects listeners.
+    }
+  }
+
+  private flushVerdicts(sessionId: string): void {
+    const prefix = `${sessionId}\u0000`
+    for (const key of this.verdicts.keys()) if (key.startsWith(prefix)) this.verdicts.delete(key)
+  }
+
+  private verdictKey(sessionId: string, pick: ModelPick): string | undefined {
+    if (pick.provider !== undefined && pick.model !== undefined && pick.provider !== '' && pick.model !== '') {
+      return `${sessionId}\u0000p\u0000${pick.provider}\u0000${pick.model}`
+    }
+    if (pick.label.trim() === '') return undefined
+    return `${sessionId}\u0000l\u0000${pick.label}`
+  }
+
+  /**
+   * Fetch the takeover verdict for one selection. Resolves the effective
+   * takeover (`true` = bridge, `false` = native) or `undefined` when the
+   * verdict could not be obtained (fetch failure, route down, rate-limited
+   * retry window) — callers then apply the text-safe bridge fallback (GA20).
+   */
+  private refreshVerdict(sessionId: string, pick: ModelPick): Promise<boolean | undefined> {
+    const key = this.verdictKey(sessionId, pick)
+    if (key === undefined) return Promise.resolve(false)
+    if (!this.routeAvailable && Date.now() < this.routeRetryAt) return Promise.resolve(undefined)
+    const cached = this.verdicts.get(key)
+    if (cached?.pending && cached.task !== undefined) return cached.task
+    const entry: VerdictEntry = { takeover: cached?.takeover, at: cached?.at ?? 0, pending: true, task: undefined }
+    this.verdicts.set(key, entry)
+    entry.task = (async () => {
+      // Optimistic probe: a 404 marks the route down only for a retry window,
+      // after which refreshVerdict re-checks instead of giving up forever (GA6).
+      this.routeAvailable = true
+      try {
+        const query = new URLSearchParams({ sessionId })
+        if (pick.provider !== undefined && pick.model !== undefined) {
+          query.set('provider', pick.provider)
+          query.set('model', pick.model)
+        } else {
+          query.set('model', pick.label)
+        }
+        const res = await fetch(`${PASTE_IMAGES_ROUTE}?${query.toString()}`)
+        if (res.status === 404) {
+          this.routeAvailable = false
+          this.routeRetryAt = Date.now() + this.VERDICT_RETRY_MS
+          return undefined
+        }
+        if (!res.ok) return undefined
+        const body = await res.json() as { takeover?: unknown }
+        entry.takeover = body.takeover === true
+        entry.at = Date.now()
+        entry.pending = false
+        return entry.takeover
+      } catch {
+        return undefined
+      } finally {
+        entry.pending = false
+      }
+    })()
+    return entry.task
+  }
+
+  /**
+   * Cached takeover for the current selection: `true`/`false` only for a
+   * fresh verdict; `undefined` (or a stale/empty signal) leaves the event
+   * held for the async decide-then-act flow.
+   */
+  private syncTakeover(sessionId: string): boolean | undefined {
+    const pick = this.currentPick(sessionId)
+    const key = this.verdictKey(sessionId, pick)
+    if (key === undefined) return false
+    const cached = this.verdicts.get(key)
+    if (cached !== undefined && !cached.pending && cached.takeover !== undefined
+      && cached.at > 0 && Date.now() - cached.at <= this.VERDICT_MAX_AGE_MS) {
+      return cached.takeover
+    }
+    return undefined
   }
 
   /** Prefetch the paste/drop takeover verdict (called on composer focus/drag enter). */
   prefetch(): void {
-    this.refreshVerdict(this.currentModelLabel())
+    const sessionId = this.ctx.sessions.list.getSnapshot().current
+    if (sessionId === undefined) return
+    const pick = this.currentPick(String(sessionId))
+    if (this.verdictKey(String(sessionId), pick) === undefined) return
+    void this.refreshVerdict(String(sessionId), pick)
   }
 
   source(): InputTriggerSource {
@@ -290,44 +410,181 @@ export class PasteImageController {
     }
   }
 
+  /**
+   * Insert the held paste through the paste-to-path bridge. Shared by the
+   * cached-true fast path and the async hold-and-decide settle (GA3).
+   */
+  private finishBridge(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    files: readonly File[],
+    text: string,
+    start: number,
+    end: number,
+    target: HTMLTextAreaElement,
+    dragEnd = false,
+  ): void {
+    if (dragEnd) window.dispatchEvent(new Event('dragend'))
+    const snapshot = input.state.getSnapshot()
+    const safeStart = Math.max(0, Math.min(start, snapshot.draft.length))
+    const safeEnd = Math.max(safeStart, Math.min(end, snapshot.draft.length))
+    let cursor = this.insertText(input, text, safeStart, safeEnd)
+    validateImages(files)
+    cursor = this.insertRecords(sessionId, input, files, cursor)
+    requestAnimationFrame(() => {
+      target.focus({ preventScroll: true })
+      target.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  /** Notify once per retry window that the bridge is unreachable (GA20). */
+  private notifyBridgeDown(input: ReturnType<PasteImageController['inputFor']>): void {
+    if (Date.now() - this.lastBridgeNoticeAt < this.VERDICT_RETRY_MS) return
+    this.lastBridgeNoticeAt = Date.now()
+    input.notify('error', 'The image bridge is temporarily unreachable; pasted images were routed through it as a text-safe fallback.')
+  }
+
+  /**
+   * Release the held event natively for a confirmed multimodal model.
+   * Preferred: the conversation service's public image-draft API so the
+   * attachment rail updates exactly like a trusted paste (GA21). Fallback:
+   * one untrusted synthetic replay of the same event (guarded against
+   * reentrancy); this degrades silently if the app gates on isTrusted.
+   */
+  private releaseNatively(
+    input: ReturnType<PasteImageController['inputFor']>,
+    files: readonly File[],
+    text: string,
+    start: number,
+    end: number,
+    target: HTMLElement,
+    kind: 'paste' | 'drop',
+  ): void {
+    if (this.replaying) return
+    const ctx = this.ctx as ClientContext & { get?: (name: string) => unknown }
+    const conversation = typeof ctx.get === 'function' ? ctx.get('conversation') : undefined
+    const face = conversation as {
+      createDraftImages?: (files: readonly File[]) => Array<{ id: string }>
+    } | undefined
+    const shell = input as unknown as { addImages?: (ids: readonly string[]) => boolean }
+    if (typeof face?.createDraftImages === 'function' && typeof shell.addImages === 'function') {
+      try {
+        // Call as a method: `createDraftImages` reads internal state off its
+        // receiver (`this.draftAttachments`), so a detached call throws
+        // "Cannot read properties of undefined".
+        const images = face.createDraftImages(files)
+        if (shell.addImages(images.map(image => image.id))) {
+          const snapshot = input.state.getSnapshot()
+          const safeStart = Math.max(0, Math.min(start, snapshot.draft.length))
+          const safeEnd = Math.max(safeStart, Math.min(end, snapshot.draft.length))
+          this.insertText(input, text, safeStart, safeEnd)
+          return
+        }
+      } catch (error) {
+        input.notify('error', message(error))
+        return
+      }
+    }
+
+    this.replaying = true
+    try {
+      const event = new Event(kind, { bubbles: true, cancelable: true }) as ClipboardEvent
+      const data = {
+        items: files.map(file => ({ kind: 'file', type: file.type, getAsFile: () => file })),
+        files,
+        getData: (mediaType: string) => mediaType === 'text/plain' ? text : '',
+      }
+      Object.defineProperty(event, kind === 'drop' ? 'dataTransfer' : 'clipboardData', { value: data })
+      target.dispatchEvent(event)
+    } finally {
+      this.replaying = false
+    }
+  }
+
+  private async settlePaste(
+    sessionId: string,
+    pick: ModelPick,
+    input: ReturnType<PasteImageController['inputFor']>,
+    files: readonly File[],
+    text: string,
+    start: number,
+    end: number,
+    target: HTMLTextAreaElement,
+    kind: 'paste' | 'drop',
+  ): Promise<void> {
+    try {
+      const verdict = await this.refreshVerdict(sessionId, pick)
+      if (verdict === undefined) {
+        // Verdict unavailable: bridge is the text-safe direction for a
+        // possibly text-only model, plus a one-time notice (GA20).
+        this.notifyBridgeDown(input)
+        if (input.state.getSnapshot().phase !== 'plain') return
+        this.finishBridge(sessionId, input, files, text, start, end, target, kind === 'drop')
+        return
+      }
+      if (verdict === true) {
+        if (input.state.getSnapshot().phase !== 'plain') return
+        this.finishBridge(sessionId, input, files, text, start, end, target, kind === 'drop')
+        return
+      }
+      if (input.state.getSnapshot().phase !== 'plain') return
+      this.releaseNatively(input, files, text, start, end, target, kind)
+    } catch (error) {
+      input.notify('error', message(error))
+    }
+  }
+
   handlePaste(event: ClipboardEvent): boolean {
+    if (this.replaying) return false
     const files = imageFiles(event.clipboardData)
     if (files.length === 0) return false
     const target = event.target
     if (!(target instanceof HTMLTextAreaElement) || target.closest('[data-composer-card]') === null) return false
 
-    // Leave the paste native for a multimodal model (or an unresolved one):
-    // only a confirmed text-only model gets the paste-to-path takeover.
-    if (!this.shouldTakeover()) return false
-
-    event.preventDefault()
-    event.stopPropagation()
-    event.stopImmediatePropagation()
-
     const sessionId = this.ctx.sessions.list.getSnapshot().current
-    if (sessionId === undefined) return true
+    if (sessionId === undefined) return false
+
+    // A fresh cached verdict decides synchronously so a native (multimodal)
+    // paste still reaches the app handlers untouched.
+    const cached = this.syncTakeover(String(sessionId))
+    if (cached === false) return false
+
     const input = this.inputFor(sessionId)
     const snapshot = input.state.getSnapshot()
-    if (snapshot.phase !== 'plain') return true
-
     const start = Math.max(0, Math.min(target.selectionStart ?? snapshot.draft.length, snapshot.draft.length))
     const end = Math.max(start, Math.min(target.selectionEnd ?? start, snapshot.draft.length))
     const text = (event.clipboardData?.getData('text/plain') ?? '').replaceAll('\uFFFC', '')
-    try {
-      let cursor = this.insertText(input, text, start, end)
-      validateImages(files)
-      cursor = this.insertRecords(String(sessionId), input, files, cursor)
-      requestAnimationFrame(() => {
-        target.focus({ preventScroll: true })
-        target.setSelectionRange(cursor, cursor)
-      })
-    } catch (error) {
-      input.notify('error', message(error))
+
+    if (cached === true) {
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      if (snapshot.phase !== 'plain') return true
+      try {
+        this.finishBridge(String(sessionId), input, files, text, start, end, target)
+      } catch (error) {
+        input.notify('error', message(error))
+      }
+      return true
     }
+
+    // Unknown verdict: hold the event — it must not reach the native handler
+    // with an unconfirmed text-only model — then decide asynchronously (GA3).
+    event.preventDefault()
+    event.stopPropagation()
+    event.stopImmediatePropagation()
+    const pick = this.currentPick(String(sessionId))
+    if (this.verdictKey(String(sessionId), pick) === undefined) {
+      // No model signal at all: release the held event natively now.
+      if (snapshot.phase === 'plain') this.releaseNatively(input, files, text, start, end, target, 'paste')
+      return true
+    }
+    void this.settlePaste(String(sessionId), pick, input, files, text, start, end, target, 'paste')
     return true
   }
 
   handleDrop(event: DragEvent): boolean {
+    if (this.replaying) return false
     const files = imageFiles(event.dataTransfer)
     if (files.length === 0) return false
 
@@ -343,37 +600,47 @@ export class PasteImageController {
       ?? document.querySelector<HTMLTextAreaElement>('[data-composer-card] textarea')
     if (!(textarea instanceof HTMLTextAreaElement)) return false
 
-    // Leave the drop native for a multimodal model (or an unresolved one):
-    // only a confirmed text-only model gets the paste-to-path takeover.
-    if (!this.shouldTakeover()) return false
-
-    event.preventDefault()
-    event.stopPropagation()
-    event.stopImmediatePropagation()
-    // The native DSH drop handler normally resets its drag overlay here; since
-    // this capture-phase takeover stops that handler, tell it to reset now.
-    window.dispatchEvent(new Event('dragend'))
-
     const sessionId = this.ctx.sessions.list.getSnapshot().current
-    if (sessionId === undefined) return true
+    if (sessionId === undefined) return false
+
+    // A fresh cached verdict decides synchronously so a native (multimodal)
+    // drop still reaches the app handlers untouched.
+    const cached = this.syncTakeover(String(sessionId))
+    if (cached === false) return false
+
     const input = this.inputFor(sessionId)
     const snapshot = input.state.getSnapshot()
-    if (snapshot.phase !== 'plain') return true
-
     const start = Math.max(0, Math.min(textarea.selectionStart ?? snapshot.draft.length, snapshot.draft.length))
     const end = Math.max(start, Math.min(textarea.selectionEnd ?? start, snapshot.draft.length))
     const text = (event.dataTransfer?.getData('text/plain') ?? '').replaceAll('\uFFFC', '')
-    try {
-      let cursor = this.insertText(input, text, start, end)
-      validateImages(files)
-      cursor = this.insertRecords(String(sessionId), input, files, cursor)
-      requestAnimationFrame(() => {
-        textarea.focus({ preventScroll: true })
-        textarea.setSelectionRange(cursor, cursor)
-      })
-    } catch (error) {
-      input.notify('error', message(error))
+
+    // The native DSH drop handler normally resets its drag overlay here; since
+    // this capture-phase takeover stops that handler, tell it to reset now.
+    if (cached === true) {
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      window.dispatchEvent(new Event('dragend'))
+      if (snapshot.phase !== 'plain') return true
+      try {
+        this.finishBridge(String(sessionId), input, files, text, start, end, textarea, true)
+      } catch (error) {
+        input.notify('error', message(error))
+      }
+      return true
     }
+
+    // Unknown verdict: hold the drop, then decide asynchronously (GA3).
+    event.preventDefault()
+    event.stopPropagation()
+    event.stopImmediatePropagation()
+    window.dispatchEvent(new Event('dragend'))
+    const pick = this.currentPick(String(sessionId))
+    if (this.verdictKey(String(sessionId), pick) === undefined) {
+      if (snapshot.phase === 'plain') this.releaseNatively(input, files, text, start, end, textarea, 'drop')
+      return true
+    }
+    void this.settlePaste(String(sessionId), pick, input, files, text, start, end, textarea, 'drop')
     return true
   }
 
@@ -459,8 +726,31 @@ export class PasteImageController {
     if (record === undefined) throw new Error('Pasted image is no longer available in this browser tab')
     await this.upload(record.batch, signal)
     if (record.absolutePath === undefined) throw new Error('Pasted image was not copied into the workspace')
-    return `[Pasted image available at absolute path: ${JSON.stringify(record.absolutePath)}]`
+    const leaf = record.absolutePath.split(/[\\/]/u).pop() ?? 'pasted-image'
+    const label = record.file.name.trim().replace(/[[\]]/g, '') || leaf
+    const fileUrl =
+      `${PASTE_IMAGES_ROUTE}/file?sessionId=${encodeURIComponent(record.batch.sessionId)}&name=${encodeURIComponent(leaf)}`
+    return `[Pasted image available at absolute path: ${JSON.stringify(record.absolutePath)}]\n\n![${label}](<${fileUrl}>)`
   }
+}
+
+/** Blob thumbnail for one dock chip; revoked when the chip unmounts (GA5). */
+function PasteThumb(props: { file: File }): ReactNode {
+  const [url, setUrl] = useState<string>('')
+  useEffect(() => {
+    if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return undefined
+    const objectUrl = URL.createObjectURL(props.file)
+    setUrl(objectUrl)
+    return () => { URL.revokeObjectURL(objectUrl) }
+  }, [props.file])
+  if (url === '') return null
+  return <img
+    className="dvt-paste-thumb"
+    src={url}
+    alt=""
+    aria-hidden="true"
+    style={{ width: 28, height: 28, objectFit: 'cover', borderRadius: 4, flex: 'none' }}
+  />
 }
 
 /** Minimal per-image progress, failure, and removal feedback above the composer. */
@@ -478,6 +768,7 @@ export function PasteImageDock(props: PasteDockProps): ReactNode {
           : record.status === 'error' ? record.error ?? 'copy failed'
             : humanBytes(record.file.size)
       return <div className="dvt-paste-chip" data-status={record.status} key={occurrence.occurrenceId}>
+        <PasteThumb file={record.file} />
         <span className="dvt-paste-name" title={record.file.name}>{record.file.name || 'clipboard image'}</span>
         <span className="dvt-paste-detail" title={record.error}>{detail}</span>
         <button
@@ -546,4 +837,25 @@ export function installPasteImages(ctx: ClientContext): void {
       remove: (occurrence: PasteOccurrence) => { controller.remove(String(sessionId), occurrence) },
     }),
   }, PasteImageDock))
+  // Shadow the product's keyed user/steering message views at priority -1
+  // (DSH renders the lowest-priority live entry per keyed cell). While
+  // installed, bridged paste-to-path messages render as image tiles plus
+  // clean text instead of leaking the model-facing path markup, and every
+  // other user message is re-rendered to match the product bubble. A render
+  // error abdicates this entry and the product view takes the seat back.
+  ctx.slots.inject('conversation.chat.node', () => {
+    const disposeUser = ctx.slots.register({
+      name: 'conversation.chat.node',
+      key: 'user',
+      priority: -1,
+      locale: 'conversation',
+    }, UserMessageNodeShadow)
+    const disposeSteering = ctx.slots.register({
+      name: 'conversation.chat.node',
+      key: 'steering',
+      priority: -1,
+      locale: 'conversation',
+    }, UserMessageNodeShadow)
+    return () => { disposeSteering(); disposeUser() }
+  })
 }

@@ -18,6 +18,7 @@ import {
   type VisionToolkitConfig,
 } from './config.ts'
 import { VisionToolkitRuntime } from './runtime.ts'
+import { VISION_TOOL_SYSTEM_PROMPT } from './system-prompt.ts'
 import { createVisionCloudTool } from './tools.ts'
 import { PLUGIN_VERSION } from './version.ts'
 import { installVisionToolkitWeb, VisionToolkitWebBackend } from './web.ts'
@@ -58,7 +59,7 @@ export function apply(ctx: Context, config: VisionToolkitConfig = {}): () => voi
     promptDisposer = ctx.systemPrompt.section({
       name: 'vision-cloud:tool',
       order: 40,
-      text: 'To read or analyze an image (an image file in the workspace, an http(s) URL ending in .png/.jpg/.jpeg/.gif/.webp, or a pasted image attachment id), use the vision_cloud_tool: it reads images through the app\'s configured vision model and returns structured evidence, so it works even when you cannot accept image input yourself. Never call vision_cloud_tool for non-image URLs (bare domains or API endpoints such as /v1/models), for videos or audio, or for non-image files such as YAML/JSON/log/text documents — use the normal read/fetch tools for those. Do not call read_image unless you are an image-capable model — read_image only hands the image back to a model that can see it.',
+      text: VISION_TOOL_SYSTEM_PROMPT,
     })
     ctx.logger.info(
       'dsh-vision-cloud %s: vision_cloud_tool registered (model %s/%s)',

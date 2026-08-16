@@ -1,7 +1,7 @@
 /**
  * DSH Vision Cloud browser plugin: a minimal Settings section (pick an app
- * model + test read) plus the paste/drop-to-path image bridge. No tool cards, no
- * artifact previews, no credentials.
+ * model + test read) plus the paste/drop-to-path image bridge. No tool cards,
+ * no artifact previews, no credentials.
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 declare const en: {
@@ -107,7 +107,7 @@ export declare class VisionSettingsController {
 }
 /** Required client services. */
 export declare const inject: string[];
-/** Register the Vision Settings section and the paste/drop-to-path bridge. */
+/** Register the Vision Settings section and the paste-to-path bridge. */
 export declare function apply(ctx: ClientContext): void;
 export {};
 //# sourceMappingURL=index.d.ts.map

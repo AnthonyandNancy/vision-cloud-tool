@@ -1,7 +1,7 @@
 /** Workspace-local storage for images pasted into the DSH Web composer. */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, mkdir, open, realpath, rename, rm } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -11,7 +11,19 @@ import { sameOriginPost } from './web-request.ts'
 /** Exact route used by the browser paste integration. */
 export const PASTE_IMAGES_ROUTE = '/_dsh/vision-cloud/paste-images'
 
+/** Read-only route that serves bridged images back to their owning session. */
+export const PASTE_IMAGE_FILE_ROUTE = '/_dsh/vision-cloud/paste-images/file'
+
 const MAX_NAME_BYTES = 180
+
+/** Media types served by the read-only bridged-image file route. */
+const FORMAT_MEDIA_TYPE_BY_EXTENSION: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+}
 
 interface PasteImageResponse {
   ok: true
@@ -205,14 +217,60 @@ export class PastedImageBackend {
    * Whether the model behind a selector label is text-only (and therefore
    * needs a paste-to-path takeover). A match that declares image input vetoes
    * the takeover, so a multimodal model keeps its native paste.
+   *
+   * Priority (freshest signal first):
+   * 1. The explicit provider/model pair sent by the client (from the live
+   *    model-selection store) — freshest, and authoritative via
+   *    `resolveModelInfo()` even for pi-ai dynamic routes.
+   * 2. A definite catalog answer for the selector label — the composer label
+   *    reflects the UI selection NOW, while `requestContext()` only reflects
+   *    the last request/context event (stale until the next send).
+   * 3. The live session's exact provider/model — last resort for custom
+   *    models whose label matches nothing in the advisory catalog.
+   * 4. No model information at all → leave the paste native.
    */
-  private async takeoverVerdict(label: string): Promise<boolean> {
+  private async takeoverVerdict(
+    sessionId: string | undefined,
+    label: string,
+    pair?: { provider: string; model: string },
+  ): Promise<boolean> {
     const llm = this.ctx.llm
-    if (label.trim() === '' || llm === undefined || typeof llm.listProviders !== 'function' || typeof llm.listModels !== 'function') {
-      return false
+
+    if (pair !== undefined && pair.provider !== '' && pair.model !== '') {
+      if (llm === undefined) return true
+      return this.takeoverForExact(pair.provider, pair.model)
+    }
+
+    const hasCatalog =
+      llm !== undefined
+      && typeof llm.listProviders === 'function'
+      && typeof llm.listModels === 'function'
+    if (label.trim() !== '' && hasCatalog) {
+      const byLabel = await this.catalogScan(label)
+      if (byLabel !== undefined) return byLabel
+    }
+
+    const exact = sessionId === undefined ? undefined : this.currentModelFromSession(sessionId)
+    if (exact !== undefined) {
+      if (llm === undefined) return true
+      return this.takeoverForExact(exact.provider, exact.model)
+    }
+
+    return false
+  }
+
+  /**
+   * Scan the advisory model catalog for a model named by the selector label.
+   * Returns a definite verdict only when the label matches a catalog entry
+   * (image-capable → native, otherwise → takeover); `undefined` when the
+   * label matches nothing (custom/pi-ai dynamic models are often absent).
+   */
+  private async catalogScan(label: string): Promise<boolean | undefined> {
+    const llm = this.ctx.llm
+    if (llm === undefined || typeof llm.listProviders !== 'function' || typeof llm.listModels !== 'function') {
+      return undefined
     }
     const lowered = label.toLowerCase()
-    let matchedTextOnly = false
     for (const info of llm.listProviders()) {
       const providerId = info?.id
       if (providerId === undefined) continue
@@ -228,14 +286,140 @@ export class PastedImageBackend {
           if (typeof candidate !== 'string' || candidate.length < 3) continue
           if (!lowered.includes(candidate.toLowerCase())) continue
           if (Array.isArray(modalities) && modalities.includes('image')) return false
-          matchedTextOnly = true
+          return true
         }
       }
     }
-    return matchedTextOnly
+    return undefined
+  }
+
+  /** Read the exact provider/model from a live Session when one is available. */
+  private currentModelFromSession(sessionId: string): { provider: string; model: string } | undefined {
+    const sessions = this.ctx.sessions as unknown as {
+      get?: (id: string) => {
+        requestContext?(): { provider?: string; model?: string } | undefined
+        requestHeader?(): { config?: { provider?: string; model?: string } } | undefined
+      } | undefined
+    }
+    if (typeof sessions?.get !== 'function') return undefined
+    const session = sessions.get(sessionId)
+    if (session === undefined) return undefined
+
+    const requestContext = typeof session.requestContext === 'function' ? session.requestContext() : undefined
+    if (requestContext?.provider && requestContext?.model) {
+      return { provider: requestContext.provider, model: requestContext.model }
+    }
+
+    const requestHeader = typeof session.requestHeader === 'function' ? session.requestHeader() : undefined
+    const config = requestHeader?.config
+    if (config?.provider && config?.model) {
+      return { provider: config.provider, model: config.model }
+    }
+    return undefined
+  }
+
+  /**
+   * Decide takeover for an exact provider/model. Explicit image input keeps the
+   * native paste/drop path; anything else (text-only, absent capability, or a
+   * resolution failure) falls back to the paste-to-path bridge.
+   */
+  private async takeoverForExact(provider: string, model: string): Promise<boolean> {
+    const llm = this.ctx.llm
+    try {
+      if (typeof llm.resolveModelInfo === 'function') {
+        const resolved = await llm.resolveModelInfo(provider, model) as {
+          inputModalities?: readonly string[]
+        }
+        if (Array.isArray(resolved?.inputModalities) && resolved.inputModalities.includes('image')) return false
+        return true
+      }
+    } catch {
+      // Fall through to the catalog scan, then to a safe takeover default.
+    }
+
+    try {
+      const models = await llm.listModels(provider) as Array<{
+        id?: string
+        name?: string
+        inputModalities?: readonly string[]
+      }>
+      for (const entry of models) {
+        if (entry?.id !== model && entry?.name !== model) continue
+        if (Array.isArray(entry?.inputModalities) && entry.inputModalities.includes('image')) return false
+        return true
+      }
+    } catch {
+      // Ignore catalog failures; the exact-model lookup above is authoritative.
+    }
+
+    return true
+  }
+
+  /**
+   * Serve one bridged image back to its owning session (read-only, same-origin
+   * inline display). The filename must be a single leaf within the session's
+   * managed paste root; symlinks and escapes are re-resolved and rejected.
+   */
+  private async handleImageFile(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    if (req.method !== 'GET') {
+      res.setHeader('Allow', 'GET')
+      requestError(res, 405, 'method-not-allowed', 'Use GET')
+      return
+    }
+    try {
+      const sessionId = singleQuery(url, 'sessionId')
+      const name = singleQuery(url, 'name')
+      if (name !== basename(name) || name === '.' || name === '..') {
+        throw new TypeError('name must be a single file leaf')
+      }
+      const extension = extname(name).toLowerCase()
+      const mediaType = FORMAT_MEDIA_TYPE_BY_EXTENSION[extension]
+      if (mediaType === undefined) {
+        throw new TypeError(`unsupported image extension "${extension || '(none)'}"; supported: .png, .jpg, .jpeg, .gif, .webp`)
+      }
+      const directory = await sessionPasteRoot(this.ctx, sessionId)
+      const candidate = join(directory.writeRoot, name)
+      ensurePathInside(directory.writeRoot, candidate)
+      let target: string
+      try {
+        target = await realpath(candidate)
+      } catch (error) {
+        const code = (error as { code?: unknown })?.code
+        if (code === 'ENOENT') throw new RangeError(`pasted image not found: ${name}`)
+        throw error
+      }
+      ensurePathInside(directory.writeRoot, target)
+      const data = await readFile(target)
+      res.writeHead(200, {
+        'content-type': mediaType,
+        'content-length': String(data.length),
+        'cache-control': 'private, no-store',
+        'x-content-type-options': 'nosniff',
+      })
+      res.end(data)
+    } catch (error) {
+      const status = error instanceof RangeError ? 404 : 400
+      this.ctx.logger.warn('dsh-vision-cloud pasted image read rejected: %s', message(error))
+      requestError(res, status, 'paste-image-read-rejected', message(error))
+    }
   }
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? PASTE_IMAGES_ROUTE, 'http://dsh.internal')
+    if (url.pathname === PASTE_IMAGE_FILE_ROUTE) {
+      if (!this.runtime.pasteToPath()) {
+        res.writeHead(404, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'paste-to-path disabled' }))
+        return
+      }
+      await this.handleImageFile(req, res, url)
+      return
+    }
+    if (url.pathname !== PASTE_IMAGES_ROUTE) {
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: 'not found' }))
+      return
+    }
     if (!this.runtime.pasteToPath()) {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: 'paste-to-path disabled' }))
@@ -243,15 +427,22 @@ export class PastedImageBackend {
     }
     if (req.method === 'GET') {
       try {
-        const url = new URL(req.url ?? PASTE_IMAGES_ROUTE, 'http://dsh.internal')
-        const label = url.searchParams.get('model') ?? ''
-        const takeover = await this.takeoverVerdict(label)
+        const provider = url.searchParams.get('provider')?.trim()
+        const modelParam = url.searchParams.get('model') ?? ''
+        const sessionId = url.searchParams.get('sessionId') ?? undefined
+        // With an explicit provider the `model` parameter carries the exact
+        // model id; without one it stays the legacy selector display label.
+        const pair = provider !== undefined && provider !== '' && modelParam.trim() !== ''
+          ? { provider, model: modelParam.trim() }
+          : undefined
+        const label = pair === undefined ? modelParam : pair.model
+        const takeover = await this.takeoverVerdict(sessionId, label, pair)
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
         res.end(JSON.stringify({ takeover }))
       } catch (error) {
         this.ctx.logger.warn('dsh-vision-cloud paste verdict failed: %s', message(error))
         res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-        res.end(JSON.stringify({ takeover: false }))
+        res.end(JSON.stringify({ takeover: true }))
       }
       return
     }
@@ -266,7 +457,6 @@ export class PastedImageBackend {
     }
 
     try {
-      const url = new URL(req.url ?? PASTE_IMAGES_ROUTE, 'http://dsh.internal')
       const sessionId = singleQuery(url, 'sessionId')
       const size = declaredSize(url)
       const mediaType = imageMediaType(req)
