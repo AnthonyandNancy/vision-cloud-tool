@@ -5,7 +5,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { UserMessageNodeShadow } from './user-message-view.tsx'
+import { ImageLightbox, UserMessageNodeShadow } from './user-message-view.tsx'
 
 const SOURCE = 'vision-cloud-pasted-image'
 export const PASTE_IMAGES_ROUTE = '/_dsh/vision-cloud/paste-images'
@@ -65,6 +65,20 @@ interface ModelPick {
   provider?: string | undefined
   model?: string | undefined
   label: string
+}
+
+/** Browser-owned draft image plus its original File, as exposed by the conversation service. */
+interface DraftMediaAttachment {
+  id: string
+  file: File
+  previewUrl: string
+}
+
+interface ConversationDraftFace {
+  createDraftImages?: (files: readonly File[]) => readonly DraftMediaAttachment[]
+  draftImages?: (ids: readonly string[]) => readonly DraftMediaAttachment[]
+  releaseDraftImages?: (attachments: readonly DraftMediaAttachment[]) => void
+  releaseDraftImage?: (id: string) => void
 }
 
 type PasteDockProps = PropsRuntime<'conversation.input.dock'> & {
@@ -231,6 +245,11 @@ export class PasteImageController {
   private readonly listeners = new Set<() => void>()
   private revision = 0
 
+  /** Draft ids shown in the host's native in-card attachment rail for bridge records. */
+  private readonly nativePreviews = new Map<string, { sessionId: string; ref: string }>()
+  private readonly previewUnsubscribes = new Map<string, () => void>()
+  private readonly submitGuards = new WeakSet<object>()
+
   constructor(private readonly ctx: ClientContext) {}
 
   subscribe = (listener: () => void): (() => void) => {
@@ -253,6 +272,7 @@ export class PasteImageController {
   private replaying = false
   private lastBridgeNoticeAt = 0
   private readonly subscribedDirectories = new Set<string>()
+  private readonly reconciliations = new Map<string, Promise<void>>()
 
   /** Best-effort current model selector label (used only without modelDirectories). */
   private currentModelLabel(): string {
@@ -306,6 +326,7 @@ export class PasteImageController {
       store.subscribe(() => {
         this.flushVerdicts(sessionId)
         this.prefetch()
+        void this.reconcileDraftMedia(sessionId)
       })
     } catch {
       // Keep the DOM label fallback when the store rejects listeners.
@@ -402,6 +423,114 @@ export class PasteImageController {
     const pick = this.currentPick(String(sessionId))
     if (this.verdictKey(String(sessionId), pick) === undefined) return
     void this.refreshVerdict(String(sessionId), pick)
+  }
+
+  /**
+   * One-way draft reconciliation: when the selected model becomes text-only
+   * and the draft still carries native image ids from a multimodal paste,
+   * convert those images to bridge references before the host rejects the
+   * next send. No destructive fallback: if the verdict is unknown the draft
+   * stays exactly as the user left it.
+   */
+  private reconcileDraftMedia(sessionId: string): Promise<void> {
+    const previous = this.reconciliations.get(sessionId)
+    if (previous !== undefined) return previous
+    const task = (async () => {
+      try {
+        const pick = this.currentPick(sessionId)
+        const key = this.verdictKey(sessionId, pick)
+        if (key === undefined) return
+
+        let input: ReturnType<PasteImageController['inputFor']>
+        try {
+          input = this.inputFor(sessionId)
+        } catch {
+          return // Subagent/no composer scope has no draft rail to reconcile.
+        }
+
+        const before = input.state.getSnapshot()
+        if (before.phase !== 'plain' || before.imageIds.length === 0) return
+
+        const verdict = await this.refreshVerdict(sessionId, pick)
+        if (verdict === undefined) {
+          input.notify('error', 'The image bridge is temporarily unreachable; native draft images were left unchanged.')
+          return
+        }
+        if (verdict !== true) return
+        // The selection may have changed again while the GET was in flight.
+        if (this.verdictKey(sessionId, this.currentPick(sessionId)) !== key) return
+
+        const snapshot = input.state.getSnapshot()
+        if (snapshot.phase !== 'plain' || snapshot.imageIds.length === 0) return
+        await this.bridgeNativeDraft(sessionId, input, snapshot.imageIds)
+      } catch (error) {
+        console.warn('dsh-vision-cloud could not reconcile draft images with the selected model', error)
+      } finally {
+        this.reconciliations.delete(sessionId)
+      }
+    })()
+    this.reconciliations.set(sessionId, task)
+    return task
+  }
+
+  private conversationDraftService(): ConversationDraftFace | undefined {
+    const ctx = this.ctx as ClientContext & { get?: (name: string) => unknown }
+    const service = typeof ctx.get === 'function' ? ctx.get('conversation') : undefined
+    if (typeof service !== 'object' || service === null) return undefined
+    return service as ConversationDraftFace
+  }
+
+  /** Copy a draft File's bytes so they survive the host releasing the draft image. */
+  private cloneDraftFile(file: File, fallbackName: string): File {
+    return new File([file], file.name.trim() || fallbackName, { type: file.type || 'image/png' })
+  }
+
+  private sameImageIds(left: readonly unknown[], right: readonly unknown[]): boolean {
+    return left.length === right.length && left.every((value, index) => value === right[index])
+  }
+
+  private async bridgeNativeDraft(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    imageIds: readonly string[],
+  ): Promise<void> {
+    const face = this.conversationDraftService()
+    const shell = input as unknown as { removeImage?: (id: string) => void }
+    if (typeof face?.draftImages !== 'function' || typeof shell.removeImage !== 'function') {
+      input.notify('error', 'The composer draft-image API is unavailable; remove the image and paste it again after selecting a text-only model.')
+      return
+    }
+
+    // Display-only previews created for bridge records must NOT be re-bridged:
+    // they already have a live bridge occurrence in the draft.
+    const previewIds = new Set<string>()
+    for (const [id, preview] of this.nativePreviews) {
+      if (preview.sessionId === sessionId) previewIds.add(id)
+    }
+    const nativeImageIds = imageIds.filter(id => !previewIds.has(id))
+    if (nativeImageIds.length === 0) return
+
+    const attachments = face.draftImages!(nativeImageIds)
+    if (attachments.length !== nativeImageIds.length || !this.sameImageIds(nativeImageIds, attachments.map(attachment => attachment.id))) {
+      input.notify('error', 'Some native draft images are no longer available; removed them and paste again.')
+      return
+    }
+    const files = attachments.map((attachment, index) =>
+      this.cloneDraftFile(attachment.file, attachment.file.name || `clipboard-image-${index + 1}`))
+    validateImages(files)
+
+    // Re-check immediately before the mutation: insert first so a failed CAS
+    // rollback leaves the original native ids untouched.
+    const snapshot = input.state.getSnapshot()
+    if (!this.sameImageIds(snapshot.imageIds.filter(id => !previewIds.has(id)), nativeImageIds)) return
+    const cursor = snapshot.draft.length
+    this.insertRecords(sessionId, input, files, cursor)
+
+    for (const id of nativeImageIds) shell.removeImage!(id)
+    try { face.releaseDraftImages?.(attachments) } catch {
+      // The migrated bridge records are independent File copies already.
+    }
+    input.notify('info', 'The selected model cannot read images directly; the draft images were converted to workspace paths and will be read through the vision tool.')
   }
 
   source(): InputTriggerSource {
@@ -513,9 +642,186 @@ export class PasteImageController {
     }
     const next = this.insertExistingRefs(input, batch.records, batch.records, cursor)
     this.bindBatchCleanup(batch, input)
+
+    // Prefer the host’s native in-card attachment rail; the custom dock above the composer
+    // stays available as an error/fallback surface when the draft-image API is absent.
+    this.admitNativePreviews(sessionId, input, batch.records)
     return next
   }
 
+  /** Whether a bridge record already has a resident native input-card preview. */
+  private hasNativePreview(ref: string): boolean {
+    for (const preview of this.nativePreviews.values()) {
+      if (preview.ref === ref) return true
+    }
+    return false
+  }
+
+  /**
+   * Remove one native preview attachment without interpreting the removal as
+   * an intentional bridge-record deletion (bookkeeping is already detached).
+   */
+  private detachNativePreview(
+    id: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    face: ConversationDraftFace | undefined,
+  ): void {
+    const unsubscribe = this.previewUnsubscribes.get(id)
+    if (unsubscribe !== undefined) {
+      unsubscribe()
+      this.previewUnsubscribes.delete(id)
+    }
+    this.nativePreviews.delete(id)
+    const shell = input as unknown as { removeImage?: (id: string) => void }
+    if ((input.state.getSnapshot().imageIds as unknown as readonly string[]).includes(id)) shell.removeImage?.(id)
+    try { face?.releaseDraftImage?.(id) } catch {
+      // The preview attachment may already have been released by the host rail.
+    }
+  }
+
+  /**
+   * Drop display-only native preview ids immediately before the host snapshots
+   * imageIds for a submit. The bridge occurrences stay untouched: they carry
+   * the prompt the text-only model can actually read.
+   */
+  private dropNativePreviews(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    face: ConversationDraftFace,
+  ): void {
+    for (const [id, preview] of this.nativePreviews) {
+      if (preview.sessionId !== sessionId) continue
+      this.detachNativePreview(id, input, face)
+    }
+  }
+
+  /**
+   * Patch the host's single submit entry for a session shell. Both the
+   * composer send control (shell.actions.submit) and the public facade
+   * (ctx.conversation.input.for(...).submit) resolve through this method.
+   */
+  private armNativePreviewSubmit(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    face: ConversationDraftFace,
+  ): void {
+    if (this.submitGuards.has(input as object)) return
+    const shell = input as unknown as { submit?: (mode?: string) => void }
+    if (typeof shell.submit !== 'function') return
+    this.submitGuards.add(input as object)
+    const original = shell.submit
+    shell.submit = (mode?: string) => {
+      this.dropNativePreviews(sessionId, input, face)
+      original.call(shell, mode)
+    }
+  }
+
+  /** Remove the bridge occurrence for one ref (native preview was removed). */
+  private removeBridgeOccurrence(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    ref: string,
+  ): void {
+    const occurrence = input.state.getSnapshot().occurrences.find(candidate =>
+      candidate.source === SOURCE && candidate.ref === ref)
+    if (occurrence !== undefined) {
+      this.remove(sessionId, occurrence)
+      return
+    }
+    if (this.records.delete(ref)) this.changed()
+  }
+
+  /**
+   * Reconcile resident native previews with input state. A preview survives
+   * only while its bridge occurrence AND image id are alive. If the user
+   * removed it from the native rail, remove the bridge occurrence; if the
+   * prompt was sent (occurrence gone), release the leftover preview draft.
+   */
+  private reconcileNativePreviews(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+  ): void {
+    if (this.nativePreviews.size === 0) return
+    const snapshot = input.state.getSnapshot()
+    const pending: Array<{ id: string; ref: string; occurrenceAlive: boolean; imageAlive: boolean }> = []
+    for (const [id, preview] of this.nativePreviews) {
+      if (preview.sessionId !== sessionId) continue
+      pending.push({
+        id,
+        ref: preview.ref,
+        occurrenceAlive: snapshot.occurrences.some(candidate => candidate.source === SOURCE && candidate.ref === preview.ref),
+        imageAlive: (snapshot.imageIds as unknown as readonly string[]).includes(id),
+      })
+    }
+    for (const entry of pending) {
+      if (entry.occurrenceAlive && entry.imageAlive) continue
+      this.detachNativePreview(entry.id, input, this.conversationDraftService())
+      if (!entry.imageAlive && entry.occurrenceAlive) {
+        this.removeBridgeOccurrence(sessionId, input, entry.ref)
+      }
+    }
+  }
+
+  private bindNativePreviewRemoval(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    id: string,
+  ): void {
+    const unsubscribe = input.state.subscribe(() => {
+      this.reconcileNativePreviews(sessionId, input)
+    })
+    this.previewUnsubscribes.set(id, unsubscribe)
+  }
+
+  /**
+   * Show bridge records in the host's native in-card attachment rail. This is
+   * display-only for text models: the submit guard removes these ids before
+   * serialization, while the bridge path text remains the model payload.
+   * Falls back to the plugin rail above the composer when the draft-image API
+   * is unavailable (e.g. older harness builds).
+   */
+  private admitNativePreviews(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    records: readonly PasteRecord[],
+  ): boolean {
+    const face = this.conversationDraftService()
+    const shell = input as unknown as {
+      addImages?: (ids: readonly string[]) => boolean
+      removeImage?: (id: string) => void
+    }
+    if (typeof face?.createDraftImages !== 'function' || typeof shell.addImages !== 'function') return false
+    const pending = records.filter(record => !this.hasNativePreview(record.ref))
+    if (pending.length === 0) return true
+    try {
+      const attachments = face.createDraftImages!(pending.map(record => record.file))
+      if (attachments.length !== pending.length) {
+        if (attachments.length > 0) face.releaseDraftImages?.(attachments)
+        return false
+      }
+      const ids = attachments.map(attachment => attachment.id)
+      if (!shell.addImages(ids)) {
+        face.releaseDraftImages?.(attachments)
+        return false
+      }
+      this.armNativePreviewSubmit(sessionId, input, face)
+      for (const [index, record] of pending.entries()) {
+        const id = ids[index]!
+        this.nativePreviews.set(id, { sessionId, ref: record.ref })
+        this.bindNativePreviewRemoval(sessionId, input, id)
+      }
+      return true
+    } catch (error) {
+      console.warn('dsh-vision-cloud could not show pasted images in the native composer rail', error)
+      return false
+    }
+  }
+
+  /** Rail records not already represented by a native in-card preview. */
+  recordsForDock(occurrences: readonly PasteOccurrence[]): PasteRecord[] {
+    const records = this.recordsFor(occurrences)
+    return records.filter(record => !this.hasNativePreview(record.ref))
+  }
   /**
    * Insert the held paste through the paste-to-path bridge. Shared by the
    * cached-true fast path and the async hold-and-decide settle (GA3).
@@ -576,6 +882,7 @@ export class PasteImageController {
         const safeEnd = Math.max(safeStart, Math.min(end, snapshot.draft.length))
         const cursorStart = this.insertText(input, '', safeStart, safeEnd)
         const cursor = this.insertExistingRefs(input, [existing], [], cursorStart)
+        this.admitNativePreviews(sessionId, input, [existing])
         requestAnimationFrame(() => {
           target.focus({ preventScroll: true })
           target.setSelectionRange(cursor, cursor)
@@ -955,6 +1262,7 @@ export class PasteImageController {
     }
     const cursor = this.insertExistingRefs(input, records, batch.records, cursorStart)
     if (batch.records.length > 0) this.bindBatchCleanup(batch, input)
+    this.admitNativePreviews(sessionId, input, records)
     requestAnimationFrame(() => {
       target.focus({ preventScroll: true })
       target.setSelectionRange(cursor, cursor)
@@ -1071,51 +1379,80 @@ export class PasteImageController {
   }
 }
 
-/** Blob thumbnail for one dock chip; revoked when the chip unmounts (GA5). */
-function PasteThumb(props: { file: File }): ReactNode {
-  const [url, setUrl] = useState<string>('')
+/** One bridged image in the composer rail: large clickable thumbnail, no visible filename. */
+function PasteImagePreview(props: {
+  file: File
+  name: string
+  status: PasteRecord['status']
+  error?: string | undefined
+  disabled: boolean
+  onRemove: () => void
+}): ReactNode {
+  const [url, setUrl] = useState('')
+  const [failed, setFailed] = useState(false)
+  const [open, setOpen] = useState(false)
   useEffect(() => {
     if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return undefined
     const objectUrl = URL.createObjectURL(props.file)
     setUrl(objectUrl)
+    setFailed(false)
     return () => { URL.revokeObjectURL(objectUrl) }
   }, [props.file])
-  if (url === '') return null
-  return <img
-    className="dvt-paste-thumb"
-    src={url}
-    alt=""
-    aria-hidden="true"
-    style={{ width: 28, height: 28, objectFit: 'cover', borderRadius: 4, flex: 'none' }}
-  />
+
+  const removeLabel = `移除 ${props.name}`
+  const previewLabel = `预览 ${props.name}`
+
+  return <div className="dvt-paste-item" data-status={props.status}>
+    <button
+      type="button"
+      className="dvt-paste-preview"
+      data-status={props.status}
+      disabled={failed || url === ''}
+      title={props.status === 'error' ? props.error ?? props.name : props.name}
+      aria-label={previewLabel}
+      onClick={() => { setOpen(true) }}
+    >
+      {url === '' || failed
+        ? <span className="dvt-paste-img-text">{failed ? '图片加载失败' : null}</span>
+        : <img className="dvt-paste-preview-img" src={url} alt={props.name} onError={() => { setFailed(true) }} />}
+      {props.status === 'copying' ? <span className="dvt-paste-status" aria-hidden="true">复制中…</span> : null}
+      {props.status === 'error' ? <span className="dvt-paste-status" data-kind="error" aria-hidden="true">!</span> : null}
+    </button>
+    <button
+      type="button"
+      className="dvt-paste-remove"
+      aria-label={removeLabel}
+      disabled={props.disabled}
+      onClick={props.onRemove}
+    >×</button>
+    {open && <ImageLightbox src={url} alt={props.name} dialog="图片预览" close="关闭预览" onClose={() => { setOpen(false) }} />}
+  </div>
 }
 
-/** Minimal per-image progress, failure, and removal feedback above the composer. */
+/**
+ * Fallback preview rail above the composer. Bridged images normally render in
+ * the host’s native in-card attachment rail; this surface remains for copies,
+ * errors, and harness builds whose guest input has no draft-image API.
+ */
 export function PasteImageDock(props: PasteDockProps): ReactNode {
   useSyncExternalStore(props.controller.subscribe, props.controller.snapshot)
   const occurrences = props.input.occurrences.filter(occurrence => occurrence.source === SOURCE)
-  const records = props.controller.recordsFor(occurrences)
+  const records = props.controller.recordsForDock(occurrences)
   if (records.length === 0) return null
-  return <div className="dvt-paste-dock" role="status" aria-label="Pasted images">
+  return <div className="dvt-paste-dock" role="status" aria-label="已添加的图片">
     {occurrences.map((occurrence) => {
       const record = props.controller.recordsFor([occurrence])[0]
       if (record === undefined) return null
-      const detail = record.status === 'copying' ? 'copying…'
-        : record.status === 'copied' ? 'copied'
-          : record.status === 'error' ? record.error ?? 'copy failed'
-            : humanBytes(record.file.size)
-      const chipName = record.filename?.trim() || record.file.name.trim() || 'clipboard image'
-      return <div className="dvt-paste-chip" data-status={record.status} key={occurrence.occurrenceId}>
-        <PasteThumb file={record.file} />
-        <span className="dvt-paste-name" title={chipName}>{chipName}</span>
-        <span className="dvt-paste-detail" title={record.error}>{detail}</span>
-        <button
-          type="button"
-          aria-label={`Remove ${chipName}`}
-          disabled={props.input.phase !== 'plain' || record.status === 'copying'}
-          onClick={() => { props.remove(occurrence) }}
-        >×</button>
-      </div>
+      const name = record.filename?.trim() || record.file.name.trim() || 'clipboard image'
+      return <PasteImagePreview
+        key={occurrence.occurrenceId}
+        file={record.file}
+        name={name}
+        status={record.status}
+        error={record.error}
+        disabled={props.input.phase !== 'plain' || record.status === 'copying'}
+        onRemove={() => { props.remove(occurrence) }}
+      />
     })}
   </div>
 }

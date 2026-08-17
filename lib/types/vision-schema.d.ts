@@ -190,6 +190,14 @@ export declare const VISION_RESULT_SCHEMA: {
     readonly required: readonly ["summary", "ocr", "layout", "semantics", "visual", "uncertainty"];
 };
 /**
+ * Keep only fields declared by the schema, recursively. Vision models
+ * frequently add plausible extras (`identity_analysis`, `faces`, ...) even
+ * when the prompt forbids them; stripping those fields here keeps the strict
+ * tool output schema (`additionalProperties: false`) from rejecting an
+ * otherwise-valid read and pushing the caller model into wrong fallbacks.
+ */
+export declare function normalizeVisionResult(value: unknown): unknown;
+/**
  * Paths where a result violates the vision contract. Empty means it matches.
  * This portable check runs after every read, so a structurally broken payload
  * fails loudly instead of reaching the model as if it were evidence.

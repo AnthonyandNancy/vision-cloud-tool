@@ -64,6 +64,9 @@ function inputMachine(initial = '') {
       publish({ ...state, imageIds: [...state.imageIds, ...ids] })
       return true
     }),
+removeImage: vi.fn((id: string) => {
+        publish({ ...state, imageIds: state.imageIds.filter(value => value !== id) })
+      }),
     insertText: vi.fn((text: string, span: { start: number; end: number; draftRev: number }) => {
       if (span.draftRev !== state.draftRev || span.start > span.end) return false
       const draft = state.draft.slice(0, span.start) + text + state.draft.slice(span.end)
@@ -392,7 +395,8 @@ describe('clipboard image client', () => {
       remove: (row: Occurrence) => void
     }))('session-1')
     render(createElement(dock.component, { input: bench.input.state.getSnapshot(), ...injected }))
-    expect(screen.getByText('0123456789abcdef.png')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '预览 0123456789abcdef.png' })).toBeTruthy()
+    expect(screen.queryByText('0123456789abcdef.png')).toBeNull()
     expect(screen.queryByText('image.png')).toBeNull()
     bench.dispose()
   })
@@ -1060,9 +1064,12 @@ describe('clipboard image client', () => {
     expect(controller.recordsFor([occurrence])[0]?.status).toBe('error')
     if (dock === undefined) throw new Error('paste dock was not registered')
     render(createElement(dock.component, { input: bench.input.state.getSnapshot(), ...injected }))
-    expect(screen.getByText('broken.png')).toBeTruthy()
-    expect(screen.getByText('workspace copy failed')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Remove broken.png' }))
+    const preview = screen.getByRole('button', { name: '预览 broken.png' })
+    expect(preview.getAttribute('title')).toBe('workspace copy failed')
+    const remove = screen.getByRole('button', { name: '移除 broken.png' })
+    expect(screen.queryByText('broken.png')).toBeNull()
+    expect(screen.queryByText('workspace copy failed')).toBeNull()
+    fireEvent.click(remove)
     expect(bench.input.state.getSnapshot().occurrences).toEqual([])
     expect(controller.recordsFor([occurrence])).toEqual([])
     bench.dispose()
@@ -1126,6 +1133,105 @@ describe('clipboard image client', () => {
     const params = new URL(String(fetchMock.mock.calls[0]?.[0]), 'http://localhost').searchParams
     expect(params.has('provider')).toBe(false)
     expect(params.get('model')).toContain('DeepSeek-V4-Flash')
+    bench.dispose()
+  })
+it('reconciles native draft images into bridge refs after switching to a text-only model (issue 1)', async () => {
+    let current: { provider: string; model: string } = { provider: 'abrdns', model: 'Qwen3.8-Max' }
+    const listeners = new Set<() => void>()
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current }),
+        subscribe: (listener: () => void) => {
+          listeners.add(listener)
+          return () => { listeners.delete(listener) }
+        },
+      },
+    }
+    const native = file('native.png', 'image/png', [1, 2, 3])
+    const draftFace = {
+      draftImages: vi.fn(() => [{ id: 'draft-native', file: native, previewUrl: 'blob:native-preview' }]),
+      releaseDraftImages: vi.fn(),
+    }
+    const bench = fakeClient('描述这张图', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+      conversation: draftFace,
+    })
+    composer()
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          ok: true,
+          value: { absolutePath: 'D:\\workspace\\.dsh-vision-cloud\\tmp\\pasted-images\\a\\native.png' },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      const params = new URL(String(url), 'http://localhost').searchParams
+      return new Response(JSON.stringify({ takeover: params.get('model') === 'DeepSeek-V4-Pro-0813' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await armTakeover() // registers the per-session model-store subscription
+    bench.input.addImages(['draft-native'])
+    expect(bench.input.state.getSnapshot().imageIds).toEqual(['draft-native'])
+
+    current = { provider: 'abrdns', model: 'DeepSeek-V4-Pro-0813' }
+    for (const listener of listeners) listener()
+    await flushTasks()
+
+    expect(bench.input.state.getSnapshot().imageIds).toEqual([])
+    expect(bench.input.removeImage).toHaveBeenCalledWith('draft-native')
+    expect(draftFace.draftImages).toHaveBeenCalledWith(['draft-native'])
+    expect(draftFace.releaseDraftImages).toHaveBeenCalledTimes(1)
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+    expect(bench.input.state.getSnapshot().draft).toContain('描述这张图')
+      expect(bench.input.state.getSnapshot().draft.endsWith('\uFFFC')).toBe(true)
+    expect(bench.input.state.getSnapshot().draft.match(/\uFFFC/gu)).toHaveLength(1)
+    expect(bench.input.notify).toHaveBeenCalledWith('info', expect.stringContaining('converted to workspace paths'))
+
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const occurrence = bench.input.state.getSnapshot().occurrences[0]
+    if (occurrence === undefined) throw new Error('bridge occurrence missing')
+    const serialized = await codec.serialize(occurrence.ref, new AbortController().signal)
+    expect(serialized).toContain('[Pasted image available at absolute path:')
+    expect(serialized).toContain('native.png')
+    bench.dispose()
+  })
+
+  it('keeps native draft images when the fresh model verdict is unknown', async () => {
+    let current: { provider: string; model: string } = { provider: 'abrdns', model: 'Qwen3.8-Max' }
+    const listeners = new Set<() => void>()
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current }),
+        subscribe: (listener: () => void) => {
+          listeners.add(listener)
+          return () => { listeners.delete(listener) }
+        },
+      },
+    }
+    const draftFace = { draftImages: vi.fn(), releaseDraftImages: vi.fn() }
+    const bench = fakeClient('不要丢图', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+      conversation: draftFace,
+    })
+    composer()
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('bridge down') }))
+
+    await armTakeover()
+    bench.input.addImages(['draft-native'])
+    current = { provider: 'abrdns', model: 'DeepSeek-V4-Pro-0813' }
+    for (const listener of listeners) listener()
+    await flushTasks()
+
+    expect(bench.input.state.getSnapshot().imageIds).toEqual(['draft-native'])
+    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
+    expect(bench.input.notify).toHaveBeenCalledWith(
+      'error',
+      'The image bridge is temporarily unreachable; native draft images were left unchanged.',
+    )
     bench.dispose()
   })
 
@@ -1267,6 +1373,66 @@ describe('clipboard image client', () => {
     bench.dispose()
   })
 
+  it('shows bridged images in the host native rail and strips display ids before submit (issue 3)', async () => {
+    const releaseDraftImage = vi.fn()
+    const conversation = {
+      createDraftImages: (files: readonly File[]) => files.map(value => ({
+        id: `preview-${value.name}`,
+        file: value,
+        previewUrl: `blob:preview-${value.name}`,
+      })),
+      releaseDraftImage,
+      releaseDraftImages: vi.fn(),
+    }
+    const bench = fakeClient('描述', ['slash'], false, { conversation })
+    const submitted = vi.fn(() => {})
+    ;(bench.input as unknown as { submit?: (mode?: string) => void }).submit = submitted
+    const textarea = composer()
+
+    textarea.dispatchEvent(clipboardEvent('', [file('one.png', 'image/png', [1])]))
+    await flushTasks()
+
+    expect(bench.input.addImages).toHaveBeenCalledWith(['preview-one.png'])
+    expect(bench.input.state.getSnapshot().imageIds).toEqual(['preview-one.png'])
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+
+    ;(bench.input as unknown as { submit?: (mode?: string) => void }).submit?.()
+    expect(submitted).toHaveBeenCalledTimes(1)
+    expect(bench.input.state.getSnapshot().imageIds).toEqual([])
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+    expect(releaseDraftImage).toHaveBeenCalledWith('preview-one.png')
+    bench.dispose()
+  })
+
+  it('drops the bridge reference when the native-rail preview is removed (issue 3)', async () => {
+    const conversation = {
+      createDraftImages: (files: readonly File[]) => files.map(value => ({
+        id: `preview-${value.name}`,
+        file: value,
+        previewUrl: `blob:preview-${value.name}`,
+      })),
+      releaseDraftImage: vi.fn(),
+      releaseDraftImages: vi.fn(),
+    }
+    const bench = fakeClient('描述', ['slash'], false, { conversation })
+    const textarea = composer()
+
+    textarea.dispatchEvent(clipboardEvent('', [file('one.png', 'image/png', [1])]))
+    await flushTasks()
+    expect(bench.input.state.getSnapshot().imageIds).toEqual(['preview-one.png'])
+    expect(bench.input.state.getSnapshot().draft).toContain('描述')
+    expect(bench.input.state.getSnapshot().draft).toContain('￼')
+
+    bench.input.removeImage('preview-one.png')
+    await flushTasks()
+
+    expect(bench.input.state.getSnapshot().imageIds).toEqual([])
+    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
+    expect(bench.input.state.getSnapshot().draft.trim()).toBe('描述')
+    bench.dispose()
+  })
+
+
   it('registers priority -1 shadows for the user and steering chat-node keys', () => {
     const bench = fakeClient('')
     const shadows = bench.registrations.filter(row => row.options.name === 'conversation.chat.node')
@@ -1312,7 +1478,7 @@ describe('clipboard image client', () => {
     }
   })
 
-  it('renders a blob thumbnail per dock chip and revokes it on unmount (A10)', async () => {
+  it('renders a named clickable image rail above the composer and revokes its blob on unmount (A10)', async () => {
     const createObjectURL = vi.fn(() => 'blob:preview')
     const revokeObjectURL = vi.fn()
     Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, configurable: true })
@@ -1333,9 +1499,16 @@ describe('clipboard image client', () => {
         input: bench.input.state.getSnapshot(),
         ...injected,
       }))
-      const thumb = container.querySelector('img.dvt-paste-thumb')
+      const thumb = container.querySelector('img.dvt-paste-preview-img')
       expect(thumb?.getAttribute('src')).toBe('blob:preview')
+      expect(container.querySelector('img')?.getAttribute('alt')).toBe('one.png')
+      expect(container.textContent).not.toContain('one.png')
       expect(createObjectURL).toHaveBeenCalledTimes(1)
+
+      // The rail behaves like the native rail: click opens a full preview.
+      fireEvent.click(container.querySelector('button.dvt-paste-preview') as Element)
+      const dialog = screen.getByRole('dialog')
+      expect(dialog.querySelector('img')?.getAttribute('src')).toBe('blob:preview')
 
       unmount()
       expect(revokeObjectURL).toHaveBeenCalledWith('blob:preview')

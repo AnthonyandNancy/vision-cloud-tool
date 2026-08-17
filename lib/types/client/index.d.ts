@@ -39,6 +39,8 @@ declare const en: {
     readonly pasteToPathHint: "Convert pasted or dropped images into workspace paths for text-only models. Leave off to keep image input native.";
     readonly reasoningEffort: "Thinking effort";
     readonly reasoningDefault: "Default (model default)";
+    readonly imageCapableOnlyHint: "Only models that accept image input are listed here.";
+    readonly modelUnsupportedLabel: "no image input";
 };
 type LocaleKey = keyof typeof en;
 declare module '@deepseek-ai/dsh-client-ui-slots' {

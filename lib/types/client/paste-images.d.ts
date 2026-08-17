@@ -37,6 +37,10 @@ export declare class PasteImageController {
     private readonly records;
     private readonly listeners;
     private revision;
+    /** Draft ids shown in the host's native in-card attachment rail for bridge records. */
+    private readonly nativePreviews;
+    private readonly previewUnsubscribes;
+    private readonly submitGuards;
     constructor(ctx: ClientContext);
     subscribe: (listener: () => void) => (() => void);
     snapshot: () => number;
@@ -49,6 +53,7 @@ export declare class PasteImageController {
     private replaying;
     private lastBridgeNoticeAt;
     private readonly subscribedDirectories;
+    private readonly reconciliations;
     /** Best-effort current model selector label (used only without modelDirectories). */
     private currentModelLabel;
     private modelDirectoriesService;
@@ -77,6 +82,19 @@ export declare class PasteImageController {
     private syncTakeover;
     /** Prefetch the paste/drop takeover verdict (called on composer focus/drag enter). */
     prefetch(): void;
+    /**
+     * One-way draft reconciliation: when the selected model becomes text-only
+     * and the draft still carries native image ids from a multimodal paste,
+     * convert those images to bridge references before the host rejects the
+     * next send. No destructive fallback: if the verdict is unknown the draft
+     * stays exactly as the user left it.
+     */
+    private reconcileDraftMedia;
+    private conversationDraftService;
+    /** Copy a draft File's bytes so they survive the host releasing the draft image. */
+    private cloneDraftFile;
+    private sameImageIds;
+    private bridgeNativeDraft;
     source(): InputTriggerSource;
     recordsFor(occurrences: readonly PasteOccurrence[]): PasteRecord[];
     private inputFor;
@@ -90,6 +108,45 @@ export declare class PasteImageController {
      */
     private insertExistingRefs;
     private insertRecords;
+    /** Whether a bridge record already has a resident native input-card preview. */
+    private hasNativePreview;
+    /**
+     * Remove one native preview attachment without interpreting the removal as
+     * an intentional bridge-record deletion (bookkeeping is already detached).
+     */
+    private detachNativePreview;
+    /**
+     * Drop display-only native preview ids immediately before the host snapshots
+     * imageIds for a submit. The bridge occurrences stay untouched: they carry
+     * the prompt the text-only model can actually read.
+     */
+    private dropNativePreviews;
+    /**
+     * Patch the host's single submit entry for a session shell. Both the
+     * composer send control (shell.actions.submit) and the public facade
+     * (ctx.conversation.input.for(...).submit) resolve through this method.
+     */
+    private armNativePreviewSubmit;
+    /** Remove the bridge occurrence for one ref (native preview was removed). */
+    private removeBridgeOccurrence;
+    /**
+     * Reconcile resident native previews with input state. A preview survives
+     * only while its bridge occurrence AND image id are alive. If the user
+     * removed it from the native rail, remove the bridge occurrence; if the
+     * prompt was sent (occurrence gone), release the leftover preview draft.
+     */
+    private reconcileNativePreviews;
+    private bindNativePreviewRemoval;
+    /**
+     * Show bridge records in the host's native in-card attachment rail. This is
+     * display-only for text models: the submit guard removes these ids before
+     * serialization, while the bridge path text remains the model payload.
+     * Falls back to the plugin rail above the composer when the draft-image API
+     * is unavailable (e.g. older harness builds).
+     */
+    private admitNativePreviews;
+    /** Rail records not already represented by a native in-card preview. */
+    recordsForDock(occurrences: readonly PasteOccurrence[]): PasteRecord[];
     /**
      * Insert the held paste through the paste-to-path bridge. Shared by the
      * cached-true fast path and the async hold-and-decide settle (GA3).
@@ -137,7 +194,11 @@ export declare class PasteImageController {
     private upload;
     private serialize;
 }
-/** Minimal per-image progress, failure, and removal feedback above the composer. */
+/**
+ * Fallback preview rail above the composer. Bridged images normally render in
+ * the host’s native in-card attachment rail; this surface remains for copies,
+ * errors, and harness builds whose guest input has no draft-image API.
+ */
 export declare function PasteImageDock(props: PasteDockProps): ReactNode;
 /** Install capture interception, the text-reference codec, and composer feedback. */
 export declare function installPasteImages(ctx: ClientContext): void;

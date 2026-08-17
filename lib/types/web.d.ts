@@ -44,6 +44,8 @@ export declare class VisionToolkitWebBackend {
     private readonly runtimeSource;
     constructor(ctx: Context, runtimeSource: () => VisionToolkitRuntime | undefined);
     private providers;
+    /** Reject a selected model that cannot receive image input before saving. */
+    private assertVisionCapableModel;
     /** Build the current settings/model snapshot without secrets. */
     snapshot(): Promise<VisionToolkitSettingsSnapshot>;
     private save;

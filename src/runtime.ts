@@ -16,7 +16,7 @@ import type { ResolvedVisionToolkitConfig } from './config.ts'
 import { VisionToolkitError } from './errors.ts'
 import { readImageHeader, sniffFormat, type ImageFormat } from './image-header.ts'
 import { createPathPolicy, resolveInputFile, SUPPORTED_IMAGE_EXTENSIONS, type PathPolicy } from './paths.ts'
-import { missingSchemaFields, type VisionResult } from './vision-schema.ts'
+import { missingSchemaFields, normalizeVisionResult, type VisionResult } from './vision-schema.ts'
 import { buildVisionPrompt } from './vision-prompt.ts'
 
 /** Validated image metadata retained in structured results and diagnostics. */
@@ -546,7 +546,7 @@ export class VisionToolkitRuntime {
         signal,
         ...(model.reasoningEffort === undefined ? {} : { reasoningEffort: ReasoningEffortId(model.reasoningEffort) }),
       }))
-      const parsed = parseVisionJson(text)
+      const parsed = normalizeVisionResult(parseVisionJson(text))
       const missing = missingSchemaFields(parsed)
       if (missing.length === 0) return parsed as VisionResult
       if (attempt < MAX_ATTEMPTS) {

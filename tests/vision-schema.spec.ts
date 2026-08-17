@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { missingSchemaFields, type VisionResult } from '../src/vision-schema.ts'
+import { missingSchemaFields, normalizeVisionResult, type VisionResult } from '../src/vision-schema.ts'
 
 function validResult(): VisionResult {
   return {
@@ -53,5 +53,26 @@ describe('vision-schema', () => {
     const broken = validResult() as unknown as Record<string, unknown>
     broken.summary = 42
     expect(missingSchemaFields(broken)).toContain('summary')
+  })
+
+  it('strips unknown top-level and nested fields while keeping declared fields', () => {
+    const extra = validResult() as unknown as Record<string, unknown>
+    extra.identity_analysis = { verdict: 'unknown' }
+    ;(extra.semantics as Record<string, unknown>).faces = ['one face']
+    const normalized = normalizeVisionResult(extra) as Record<string, unknown>
+    expect(normalized).toMatchObject({
+      summary: 'A summary',
+      ocr: { full_text: 'hello', lines: [{ text: 'hello', language: 'en' }] },
+      semantics: { scene: 'document', entities: [{ name: 'x', type: 'thing' }] },
+    })
+    expect('identity_analysis' in normalized).toBe(false)
+    expect('faces' in (normalized.semantics as Record<string, unknown>)).toBe(false)
+    expect(missingSchemaFields(normalized)).toEqual([])
+  })
+
+  it('leaves non-object payloads untouched so schema validation still reports them', () => {
+    expect(normalizeVisionResult('nope')).toBe('nope')
+    expect(normalizeVisionResult(42)).toBe(42)
+    expect(missingSchemaFields(normalizeVisionResult('nope'))).toContain('(root)')
   })
 })

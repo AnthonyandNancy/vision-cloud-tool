@@ -165,6 +165,35 @@ export const VISION_RESULT_SCHEMA = {
   required: ['summary', 'ocr', 'layout', 'semantics', 'visual', 'uncertainty'],
 } as const
 
+/**
+ * Keep only fields declared by the schema, recursively. Vision models
+ * frequently add plausible extras (`identity_analysis`, `faces`, ...) even
+ * when the prompt forbids them; stripping those fields here keeps the strict
+ * tool output schema (`additionalProperties: false`) from rejecting an
+ * otherwise-valid read and pushing the caller model into wrong fallbacks.
+ */
+export function normalizeVisionResult(value: unknown): unknown {
+  function normalize(schema: JsonSchemaNode, candidate: unknown): unknown {
+    if (schema.type === 'object') {
+      if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) return candidate
+      const record = candidate as Record<string, unknown>
+      const out: Record<string, unknown> = {}
+      for (const [key, childSchema] of Object.entries(schema.properties ?? {})) {
+        if (!(key in record) || record[key] === undefined) continue
+        out[key] = normalize(childSchema, record[key])
+      }
+      return out
+    }
+    if (schema.type === 'array') {
+      if (!Array.isArray(candidate)) return candidate
+      if (schema.items === undefined) return candidate
+      return candidate.map(item => normalize(schema.items!, item))
+    }
+    return candidate
+  }
+  return normalize(VISION_RESULT_SCHEMA as unknown as JsonSchemaNode, value)
+}
+
 function schemaViolations(schema: JsonSchemaNode, value: unknown, path: string): string[] {
   const label = path || '(root)'
 

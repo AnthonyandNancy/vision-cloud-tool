@@ -174,8 +174,8 @@ function resolveLabels(t: ShadowTranslate | undefined): ShadowLabels {
   }
 }
 
-/** Body-portal original-image preview; closes on Escape or backdrop press. */
-function Lightbox(props: { src: string; alt: string; dialog: string; close: string; onClose: () => void }): ReactNode {
+/** Body-portal original-image preview; closes on Escape or backdrop press. Shared by chat bubbles and the composer paste rail. */
+export function ImageLightbox(props: { src: string; alt: string; dialog: string; close: string; onClose: () => void }): ReactNode {
   const { onClose } = props
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -248,7 +248,7 @@ function NativeImageCell(props: {
     >
       <img src={src} alt={props.name} style={fit === undefined ? undefined : { objectPosition: fit.objectPosition }} />
     </button>
-    {open && <Lightbox src={src} alt={props.name} dialog={props.labels.preview} close={props.labels.closePreview} onClose={() => { setOpen(false) }} />}
+    {open && <ImageLightbox src={src} alt={props.name} dialog={props.labels.preview} close={props.labels.closePreview} onClose={() => { setOpen(false) }} />}
   </>
 }
 
@@ -282,7 +282,7 @@ function BridgeImageCell(props: {
       {/* The file route is no-store, so a keyed remount re-fetches on retry. */}
       <img key={attempt} src={props.item.url} alt={props.name} onError={() => { setFailed(true) }} />
     </button>
-    {open && <Lightbox src={props.item.url} alt={props.name} dialog={props.labels.preview} close={props.labels.closePreview} onClose={() => { setOpen(false) }} />}
+    {open && <ImageLightbox src={props.item.url} alt={props.name} dialog={props.labels.preview} close={props.labels.closePreview} onClose={() => { setOpen(false) }} />}
   </>
 }
 

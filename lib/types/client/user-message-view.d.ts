@@ -65,6 +65,14 @@ export declare function splitContent(content: readonly unknown[]): SplitContent;
  * [0.25, 4] with `object-fit: cover`, never upscaled past the natural size.
  */
 export declare function singleFit(width: number, height: number): ImageFit;
+/** Body-portal original-image preview; closes on Escape or backdrop press. Shared by chat bubbles and the composer paste rail. */
+export declare function ImageLightbox(props: {
+    src: string;
+    alt: string;
+    dialog: string;
+    close: string;
+    onClose: () => void;
+}): ReactNode;
 /**
  * Priority -1 shadow of the product's keyed `user` / `steering` chat-node
  * views. Props are the framework's composed slot props (node, loadImage, t,

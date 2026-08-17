@@ -142,7 +142,7 @@ Get-ChildItem -Recurse .dsh-vision-cloud\tmp\pasted-images -File | Select-Object
 
 | ID | 场景 | 操作步骤 | 观察点与预期（修复后） | 当前版本 | 自动映射 |
 | --- | --- | --- | --- | --- | --- |
-| E1 | 文本+单图粘贴 | A 下粘贴 png 截图 → 发送"描述这张图" | 芯片带缩略图；消息=路径文本+图片；AI 调 `vision_cloud_tool` 且回答基于图片 | 芯片无图、可能弹 PNG 提示 | A5/A8/A10 |
+| E1 | 文本+单图粘贴 | A 下粘贴 png 截图 → 发送"描述这张图" | 输入框内原生图轨显示缩略图（可预览/移除）；消息=路径文本+图片；AI 调 `vision_cloud_tool` 且回答基于图片 | 无原生图轨时退回 composer 上方 fallback rail；不弹 PNG 提示 | A5/A8/A10 |
 | E2 | 文本+多图粘贴 | A 下同时粘贴 png+jpg+webp（3 张） | 3 芯片；发送后工具一次读 3 图；`.dsh-vision-cloud/tmp/pasted-images` 新增 3 文件 | 同上 | A5（复用到现有多图用例） |
 | E3 | 文本+拖拽多图 | A 下拖 2 张图入输入框 | 同粘贴桥接；原生 drop 处理器未被触发（无原生附件） | 同上 | A6 |
 | E4 | 文本+非白名单格式 | A 下粘贴 .bmp / .svg 图片 | 桥接受理并写入 `.bmp/.svg` 文件；发送后工具报 `unsupported image format`（已知限制，见第 5 章） | 同左（文档化行为） | A7 |
@@ -152,7 +152,7 @@ Get-ChildItem -Recurse .dsh-vision-cloud\tmp\pasted-images -File | Select-Object
 | E8 | 切换序：文→多 | A 发过消息 → 切 M → 粘贴 | 见 R2（原生，无工具调用） | ❌ R2（实测裁决错误） | A2/A3/A4 |
 | E9 | 切换序：多→多 / 文→文 | 同类模型间切换后粘贴 | 多→多原生；文→文桥接；裁决与当前选择一致 | 首次粘贴可能撞 60s 缓存竞态（R3） | A2/A3 |
 | E10 | 切换后未发送即粘贴 | 任意切换 → 不发送 → 粘贴 | 裁决=当前选择（客户端显式 provider/model + 模型目录订阅，`requestContext` 过期不影响） | 依赖过期 requestContext | A2/A3/A4 |
-| E11 | 原生图挂草案再切文本 | M 下粘贴（原生附件留存）→ 切 A → 直接发送 | DSH 自身行为：发送被拒并弹不支持提示（插件无法转换既有附件，第 5 章）。文档化缓解：删除附件行重新粘贴即可走桥接 | 同左 | — |
+| E11 | 原生图挂草案再切文本 | M 下粘贴（原生附件留存）→ 切 A → 直接发送 | 模型选择变化时，客户端自动把既有原生草案附件迁移为路径桥：输入区显示预览轨，发送后走 `vision_cloud_tool`，不再弹不支持提示；桥接裁决不可达时保留原图并提示，不误删草案 | 同左 | 客户端迁移回归用例（模型切换调和） |
 | E12 | pasteToPath=false | 关闭桥接，A/M 下粘贴 | 全程原生路径：M 正常；A 按 DSH 原生行为弹提示（符合预期） | 同左 | A1 |
 | E13 | URL 图片读取 | 对 A 说"读 https://…/x.png 描述" | 工具接受并以 .png/.jpg/.jpeg/.gif/.webp 直链读取；非图片 URL（API/HTML/json）在发起网络前被拒 | 同左 | 现有 `runtime-url-guard.spec.ts` |
 | E14 | 附件 id 读取 | M 会话中原生图发送后，对 A 用 `sha256:…` id 读图 | 工具从会话历史解析附件并读取 | 同左 | A11 |
@@ -478,7 +478,7 @@ it('keeps the URL/path exception for image-capable models', () => {
 
 | # | 行为 | 决策 |
 | --- | --- | --- |
-| L1 | E11：多模态期原生附件 + 切文本后直接发送 | DSH 宿主按 `MODEL_DOES_NOT_SUPPORT_IMAGES` 拒绝并提示，属 DSH 自身行为；插件无公开 API 转换既有草案附件。缓解：删除附件行后重新粘贴（此时裁决已是当前选择，走桥接） |
+| L1 | E11：多模态期原生附件 + 切文本后直接发送 | 已实现客户端单向调和：模型切到文本能力时，既有原生草案附件自动转路径桥（先插桥、后移除原生 id，失败不破坏草案）。桥接图通过 `createDraftImages`/`addImages` 显示在输入框内宿主图轨，发送前自动剥离显示 ids；删除图轨缩略图会同步删除桥接引用。反向（文本桥→多模态原生回迁）暂不自动执行 |
 | L2 | E4：bmp/svg 等非白名单格式 | 桥接只负责搬运落盘；`vision_cloud_tool` 按 `paths.ts` 白名单（.png/.jpg/.jpeg/.gif/.webp）拒绝。后续可选改进：桥接端先行拒收并在芯片上即时报错 |
 | L3 | 修复⑤的气泡内联图片 | 已由 3.8 阴影渲染器实现：插件自带 `user`/`steering` 气泡视图（priority -1 阴影），不再依赖 DSH 消息 markdown 渲染器——用户气泡本来就是纯文本渲染，markdown 内联图从未可行。桥接消息对模型仍是"路径文本"，对显示是大图 + 干净文字 |
 | L4 | 空裁决（无任何模型信息）| **2026-08-16 反转为 `takeover:true`（桥接）**（3.9）。旧决策（原生）在 harness agent 输入框无模型信号的场景下把图片块塞进 pi-ai 文本模型请求，必炸 UNSUPPORTED_CONTENT（会话 41683fc5 实锤）。桥接方向对两种模型都安全：多模态降级为路径文本 + `vision_cloud_tool` 识图 |

@@ -24,4 +24,10 @@ describe('vision tool system prompt (A9)', () => {
     expect(lowered).toContain('never call vision_cloud_tool for non-image urls')
     expect(lowered).toContain('do not call read_image unless you are an image-capable model')
   })
+
+  it('forbids falling back to read_image when vision_cloud_tool errors', () => {
+    expect(lowered).toContain('never fall back to read_image')
+    expect(lowered).toContain('retry vision_cloud_tool')
+    expect(lowered).toContain('pass it inside vision_cloud_tool.images')
+  })
 })
