@@ -20,6 +20,8 @@ interface PasteRecord {
   status: 'ready' | 'copying' | 'copied' | 'error'
   error?: string | undefined
   absolutePath?: string | undefined
+  /** Final server-derived leaf (SHA-256 addressed after upload), if saved. */
+  filename?: string | undefined
 }
 
 interface PasteBatch {
@@ -31,7 +33,7 @@ interface PasteBatch {
 
 interface PasteResponse {
   ok: boolean
-  value?: { absolutePath?: string }
+  value?: { absolutePath?: string; filename?: string }
   error?: { message?: string }
 }
 
@@ -219,8 +221,8 @@ async function responseJson(response: Response): Promise<PasteResponse> {
   return body
 }
 
-function pasteLabel(file: File, index: number): string {
-  return file.name.trim() || `clipboard-image-${index + 1}`
+function pasteLabel(file: File, index: number, saved?: string | undefined): string {
+  return saved?.trim() || file.name.trim() || `clipboard-image-${index + 1}`
 }
 
 /** Owns browser File objects until DSH serializes the corresponding text references. */
@@ -410,7 +412,10 @@ export class PasteImageController {
       candidates: () => Promise.resolve([]),
       onPick: () => undefined,
       codec: {
-        clipboardText: ref => `[pasted image: ${this.records.get(ref)?.file.name ?? ref}]`,
+        clipboardText: (ref) => {
+          const record = this.records.get(ref)
+          return `[pasted image: ${record === undefined ? ref : pasteLabel(record.file, 0, record.filename)}]`
+        },
         serialize: (ref, signal) => this.serialize(ref, signal),
       },
     }
@@ -471,7 +476,7 @@ export class PasteImageController {
       const before = input.state.getSnapshot().draft.slice(0, cursor)
       if (before !== '' && !/\s$/u.test(before)) cursor = this.insertText(input, ' ', cursor)
       for (const [index, record] of records.entries()) {
-        const label = pasteLabel(record.file, index)
+        const label = pasteLabel(record.file, index, record.filename)
         const snapshot = input.state.getSnapshot()
         const accepted = input.insertReference({
           source: SOURCE,
@@ -1029,6 +1034,8 @@ export class PasteImageController {
               throw new Error('Image copy response contained an invalid path')
             }
             record.absolutePath = absolutePath
+            const filename = body.value?.filename
+            if (typeof filename === 'string' && filename.trim() !== '') record.filename = filename.trim()
             record.status = 'copied'
             record.error = undefined
             return undefined
@@ -1057,7 +1064,7 @@ export class PasteImageController {
     await this.upload(record.batch, signal)
     if (record.absolutePath === undefined) throw new Error('Pasted image was not copied into the workspace')
     const leaf = record.absolutePath.split(/[\\/]/u).pop() ?? 'pasted-image'
-    const label = record.file.name.trim().replace(/[[\]]/g, '') || leaf
+    const label = (record.filename ?? record.file.name).trim().replace(/[[\]]/g, '') || leaf
     const fileUrl =
       `${PASTE_IMAGES_ROUTE}/file?sessionId=${encodeURIComponent(record.batch.sessionId)}&name=${encodeURIComponent(leaf)}`
     return `[Pasted image available at absolute path: ${JSON.stringify(record.absolutePath)}]\n\n![${label}](<${fileUrl}>)`
@@ -1097,13 +1104,14 @@ export function PasteImageDock(props: PasteDockProps): ReactNode {
         : record.status === 'copied' ? 'copied'
           : record.status === 'error' ? record.error ?? 'copy failed'
             : humanBytes(record.file.size)
+      const chipName = record.filename?.trim() || record.file.name.trim() || 'clipboard image'
       return <div className="dvt-paste-chip" data-status={record.status} key={occurrence.occurrenceId}>
         <PasteThumb file={record.file} />
-        <span className="dvt-paste-name" title={record.file.name}>{record.file.name || 'clipboard image'}</span>
+        <span className="dvt-paste-name" title={chipName}>{chipName}</span>
         <span className="dvt-paste-detail" title={record.error}>{detail}</span>
         <button
           type="button"
-          aria-label={`Remove ${record.file.name || 'clipboard image'}`}
+          aria-label={`Remove ${chipName}`}
           disabled={props.input.phase !== 'plain' || record.status === 'copying'}
           onClick={() => { props.remove(occurrence) }}
         >×</button>

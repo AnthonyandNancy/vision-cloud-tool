@@ -8,6 +8,10 @@ All notable user-facing changes to DSH Vision Cloud are documented in this file.
 
 - Dragged images now use the same paste-to-path bridge as clipboard images for confirmed text-only models, so dropping an image into the Web composer no longer sends a native image block that the model cannot accept.
 
+### Changed
+
+- Paste-to-path uploads are stored under content-addressed SHA-256 filenames (meaningful stems keep the readable suffix, while generic `image.png` placeholders collapse to the pure hash) and identical bytes are deduplicated. Bridged bubbles and copy chips now display the saved hashed name instead of relying on the browser-provided placeholder name.
+
 ## [0.1.7] - 2026-08-15
 
 ### Added

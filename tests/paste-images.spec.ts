@@ -1,10 +1,11 @@
 import { createServer, type Server } from 'node:http'
 import { mkdtemp, readFile, readdir, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, join, relative, sep } from 'node:path'
+import { basename, dirname, join, relative, sep } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ensurePathInside,
+  hashedPastedImageName,
   PASTE_IMAGE_FILE_ROUTE,
   PASTE_IMAGES_ROUTE,
   PastedImageBackend,
@@ -76,6 +77,30 @@ function sessionWithModel(cwd: string, provider: string, model: string) {
     requestContext: () => ({ provider, model }),
   }
 }
+
+describe('hashed pasted image names', () => {
+  const digest = '0123456789abcdef'.repeat(4)
+
+  it('uses a pure hash leaf for generic placeholder stems', () => {
+    expect(hashedPastedImageName('image.png', 'image/png', digest)).toBe('0123456789abcdef.png')
+    expect(hashedPastedImageName('截图.png', 'image/png', digest)).toBe('0123456789abcdef.png')
+    expect(hashedPastedImageName('', 'image/jpeg', digest)).toBe('0123456789abcdef.jpg')
+  })
+
+  it('keeps a readable stem for meaningful names and canonicalizes the media extension', () => {
+    expect(hashedPastedImageName('login-page.jpeg', 'image/png', digest)).toBe('0123456789abcdef-login-page.png')
+  })
+
+  it('does not nest the previous hashed prefix when a rendered tile is re-bridged', () => {
+    expect(hashedPastedImageName('0123456789abcdef-doc.png', 'image/png', digest)).toBe('0123456789abcdef-doc.png')
+    expect(hashedPastedImageName('0123456789abcdef-image.png', 'image/png', digest)).toBe('0123456789abcdef.png')
+  })
+
+  it('rejects digests that are not SHA-256 hex', () => {
+    expect(() => hashedPastedImageName('image.png', 'image/png', 'short')).toThrow(/SHA-256 hex digest/u)
+    expect(() => hashedPastedImageName('image.png', 'image/png', 'z'.repeat(64))).toThrow(/SHA-256 hex digest/u)
+  })
+})
 
 describe('pasted image Web backend', () => {
   it('copies every image from a multi-image paste into the live Session workspace', async () => {
@@ -158,12 +183,39 @@ describe('pasted image Web backend', () => {
 
     expect(response.status).toBe(201)
     expect(inside(cwd, value.absolutePath)).toBe(true)
-    expect(value.filename).toBe('outside.png')
-    expect(basename(value.absolutePath)).toMatch(/^[0-9a-f-]+-outside\.png$/u)
+    expect(value.filename).toMatch(/^[0-9a-f]{16}-outside\.png$/u)
+    expect(basename(value.absolutePath)).toBe(value.filename)
     expect(() => ensurePathInside(cwd, join(cwd, '..', 'escape.png'))).toThrow(/escapes/u)
     expect(safePastedImageName('..\\..\\bad:<name>.png', 'image/png')).toBe('bad__name_.png')
     expect(safePastedImageName('CON.png', 'image/png')).toBe('_CON.png')
     expect(safePastedImageName('trailing... ', 'image/png')).toBe('trailing')
+  })
+
+  it('names generic pastes by content hash, keeps meaningful stems, and deduplicates identical bytes', async () => {
+    const cwd = await workspace()
+    const { upload } = await setup(cwd)
+    const response = await upload('image.png', 'image/png', Uint8Array.of(1, 2, 3))
+    const value = (await response.json() as { value: { absolutePath: string; filename: string } }).value
+
+    expect(response.status).toBe(201)
+    expect(inside(cwd, value.absolutePath)).toBe(true)
+    expect(value.filename).toMatch(/^[0-9a-f]{16}\.png$/u)
+    expect(basename(value.absolutePath)).toBe(value.filename)
+
+    const duplicate = await upload('image.png', 'image/png', Uint8Array.of(1, 2, 3))
+    const duplicateValue = (await duplicate.json() as { value: { absolutePath: string; filename: string } }).value
+    expect(duplicateValue.absolutePath).toBe(value.absolutePath)
+    expect(duplicateValue.filename).toBe(value.filename)
+    expect(await readdir(dirname(value.absolutePath))).toEqual([value.filename])
+
+    const different = await upload('image.png', 'image/png', Uint8Array.of(1, 2, 4))
+    const differentValue = (await different.json() as { value: { absolutePath: string; filename: string } }).value
+    expect(differentValue.filename).toMatch(/^[0-9a-f]{16}\.png$/u)
+    expect(differentValue.filename).not.toBe(value.filename)
+
+    const labeled = await upload('login-page.png', 'image/png', Uint8Array.of(7))
+    const labeledValue = (await labeled.json() as { value: { absolutePath: string; filename: string } }).value
+    expect(labeledValue.filename).toMatch(/^[0-9a-f]{16}-login-page\.png$/u)
   })
 
   it('rejects a symlinked plugin temp root that resolves outside the workspace', async () => {

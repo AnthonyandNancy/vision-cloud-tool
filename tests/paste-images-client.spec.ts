@@ -357,6 +357,46 @@ describe('clipboard image client', () => {
     bench.dispose()
   })
 
+  it('prefers the server-returned hashed filename in the serialized bridge and copy chip', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    const request = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method !== 'POST') return new Response(JSON.stringify({ takeover: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+      return new Response(JSON.stringify({
+        ok: true,
+        value: {
+          absolutePath: ['D:', 'workspace', '.dsh-vision-cloud', 'tmp', 'pasted-images', 'a', '0123456789abcdef.png'].join(String.fromCharCode(92)),
+          filename: '0123456789abcdef.png',
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', request)
+    await armTakeover()
+
+    textarea.dispatchEvent(clipboardEvent('', [file('image.png', 'image/png', [1])]))
+    const snapshot = bench.input.state.getSnapshot()
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const [serialized] = await Promise.all(snapshot.occurrences.map(row => codec.serialize(row.ref, new AbortController().signal)))
+
+    expect(serialized).toContain('0123456789abcdef.png')
+    expect(serialized).toContain('</_dsh/vision-cloud/paste-images/file?sessionId=session-1&name=0123456789abcdef.png>')
+    expect(serialized).not.toContain('![image.png]')
+    const dock = bench.registrations.find(row => row.options.id === 'vision-cloud-pasted-images')
+    if (dock === undefined) throw new Error('paste dock was not registered')
+    const injected = (dock.options.inject as ((sessionId: string) => {
+      controller: PasteImageController
+      remove: (row: Occurrence) => void
+    }))('session-1')
+    render(createElement(dock.component, { input: bench.input.state.getSnapshot(), ...injected }))
+    expect(screen.getByText('0123456789abcdef.png')).toBeTruthy()
+    expect(screen.queryByText('image.png')).toBeNull()
+    bench.dispose()
+  })
+
   it('converts dropped images to text references for a confirmed text-only model and blocks the native ImageBlock path', async () => {
     const bench = fakeClient('prefix ')
     const textarea = composer()

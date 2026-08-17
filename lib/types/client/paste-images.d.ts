@@ -11,6 +11,8 @@ interface PasteRecord {
     status: 'ready' | 'copying' | 'copied' | 'error';
     error?: string | undefined;
     absolutePath?: string | undefined;
+    /** Final server-derived leaf (SHA-256 addressed after upload), if saved. */
+    filename?: string | undefined;
 }
 interface PasteBatch {
     sessionId: string;

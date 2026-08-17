@@ -7,6 +7,14 @@ export declare const PASTE_IMAGES_ROUTE = "/_dsh/vision-cloud/paste-images";
 export declare const PASTE_IMAGE_FILE_ROUTE = "/_dsh/vision-cloud/paste-images/file";
 /** Convert an untrusted browser label into one portable leaf filename. */
 export declare function safePastedImageName(raw: string, mediaType: string): string;
+/**
+ * Derive the final content-addressed leaf for one pasted image.
+ * Meaningful original stems keep a readable suffix (`<hash>-login-page.png`);
+ * generic placeholders such as `image.png` collapse to pure `<hash>.png`.
+ * The extension follows the declared media type when it maps to a known
+ * format, falling back to the sanitized browser-label extension otherwise.
+ */
+export declare function hashedPastedImageName(raw: string, mediaType: string, digest: string): string;
 /** Reject a resolved path that is not rooted below the expected directory. */
 export declare function ensurePathInside(root: string, target: string): void;
 /** Runtime limit face kept separate for focused backend tests. */

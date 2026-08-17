@@ -44,7 +44,7 @@
 | 观察点 | 位置/方法 |
 | --- | --- |
 | 裁决接口 | `GET /_dsh/vision-cloud/paste-images?sessionId=<id>&model=<label>&(provider=&model=)`，返回 `{"takeover":bool}` |
-| 桥接上传证据 | 工作区 `.dsh-vision-cloud\tmp\pasted-images\<sha256(sessionId)前20位>\<uuid>-<filename>` 出现新文件 |
+| 桥接上传证据 | 工作区 `.dsh-vision-cloud\tmp\pasted-images\<sha256(sessionId)前20位>\<sha256(图片内容)前16位>[-<清洗后的原名>].<ext>` 出现新文件（`image.png` 等占位名省略原名；相同内容复用同一文件） |
 | 消息形态 | 会话气泡里是**图片缩略图**还是 `[pasted image: xxx.png]` / 路径文本 |
 | 工具调用 | 会话中出现 `vision_cloud_tool` 调用卡片（有 = 调工具；无 = 模型直接看图） |
 | 模型回答 | 内容是否基于图片（如描述图片主体），还是回复"请上传 png"等提示语 |

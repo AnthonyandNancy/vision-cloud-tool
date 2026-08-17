@@ -16,6 +16,16 @@ export const PASTE_IMAGE_FILE_ROUTE = '/_dsh/vision-cloud/paste-images/file'
 
 const MAX_NAME_BYTES = 180
 
+/** Leading digest characters used for content-addressed paste filenames. */
+const HASH_PREFIX_LENGTH = 16
+
+/**
+ * Browser/app drag sources commonly supply placeholder labels such as
+ * `image.png` or `截图.png`. A matching stem carries no human meaning, so the
+ * hashed filename omits it and keeps the pure `<hash>.<ext>` shape.
+ */
+const GENERIC_IMAGE_STEM_RE = /^(?:image|img|picture|photo|screenshot|screen[-_. ]?shot|screencap|paste|pasted[-_. ]?image|clipboard[-_. ]?image|clipboard|untitled|noname|no[-_. ]?name|未命名|无标题|图片|截图|屏幕截图|截屏)(?:[-_. ]*\d{0,4})?$/iu
+
 /** Media types served by the read-only bridged-image file route. */
 const FORMAT_MEDIA_TYPE_BY_EXTENSION: Record<string, string> = {
   '.png': 'image/png',
@@ -112,6 +122,36 @@ export function safePastedImageName(raw: string, mediaType: string): string {
   return `${stem}${extension}`
 }
 
+
+/**
+ * Derive the final content-addressed leaf for one pasted image.
+ * Meaningful original stems keep a readable suffix (`<hash>-login-page.png`);
+ * generic placeholders such as `image.png` collapse to pure `<hash>.png`.
+ * The extension follows the declared media type when it maps to a known
+ * format, falling back to the sanitized browser-label extension otherwise.
+ */
+export function hashedPastedImageName(raw: string, mediaType: string, digest: string): string {
+  if (!/^[0-9a-f]{16,}$/iu.test(digest)) throw new TypeError('hashedPastedImageName requires a SHA-256 hex digest')
+  const prefix = digest.slice(0, HASH_PREFIX_LENGTH).toLowerCase()
+  const sanitized = safePastedImageName(raw, mediaType)
+  const sourceExtension = extname(sanitized).slice(0, 20)
+  const declaredExtension = extensionFor(mediaType)
+  const extension = declaredExtension !== '.img' ? declaredExtension : sourceExtension.toLowerCase() || declaredExtension
+  let stem = sourceExtension === '' ? sanitized : sanitized.slice(0, sanitized.length - sourceExtension.length)
+  stem = stem.replace(/[. ]+$/u, '')
+
+  // Re-bridging a rendered tile feeds the previous hashed leaf back as the
+  // browser File name; the same bytes then hash to the same prefix and the
+  // old prefix would otherwise be prefixed a second time.
+  const previousPrefix = `${prefix}-`
+  if (stem.toLowerCase().startsWith(previousPrefix)) stem = stem.slice(previousPrefix.length)
+
+  if (stem === '' || GENERIC_IMAGE_STEM_RE.test(stem)) return `${prefix}${extension}`
+  const stemBudget = Math.max(1, MAX_NAME_BYTES - Buffer.byteLength(`${previousPrefix}${extension}`))
+  while (Buffer.byteLength(stem) > stemBudget) stem = stem.slice(0, -1)
+  return `${previousPrefix}${stem}${extension}`
+}
+
 /** Reject a resolved path that is not rooted below the expected directory. */
 export function ensurePathInside(root: string, target: string): void {
   const rel = relative(root, target)
@@ -163,27 +203,61 @@ async function sessionPasteRoot(ctx: Context, sessionId: string): Promise<PasteR
   return { writeRoot: sessionRoot, visibleRoot: requestedSessionRoot }
 }
 
+interface WrittenPastedImage {
+  path: string
+  filename: string
+}
+
+/**
+ * Publish a fully written staging file into its content-addressed slot.
+ * When the target already exists its digest equals ours (hash collision is
+ * cryptographically negligible), so the existing copy is kept instead of
+ * overwriting identical bytes. A concurrent upload of the same content may
+ * publish first; we then discard the staging copy as well.
+ */
+async function publishStagedImage(stagingPath: string, finalPath: string): Promise<void> {
+  try {
+    const existing = await lstat(finalPath)
+    if (!existing.isFile()) throw new Error(`pasted-image target is not a regular file: ${finalPath}`)
+    await rm(stagingPath, { force: true })
+    return
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error
+  }
+
+  try {
+    await rename(stagingPath, finalPath)
+  } catch (error) {
+    const code = (error as { code?: unknown })?.code
+    if (code !== 'EEXIST' && code !== 'EPERM') throw error
+    const existing = await lstat(finalPath)
+    if (!existing.isFile()) throw error
+    await rm(stagingPath, { force: true }).catch(() => {})
+  }
+}
+
 async function writeImage(
   req: IncomingMessage,
   directory: string,
-  filename: string,
+  rawName: string,
+  mediaType: string,
   expectedBytes: number,
   maxBytes: number,
-): Promise<string> {
+): Promise<WrittenPastedImage> {
   if (expectedBytes > maxBytes) throw new RangeError(`image exceeds the ${maxBytes}-byte paste limit`)
   const id = randomUUID()
-  const finalPath = join(directory, `${id}-${filename}`)
   const stagingPath = join(directory, `.${id}.partial`)
-  ensurePathInside(directory, finalPath)
   ensurePathInside(directory, stagingPath)
 
   const handle = await open(stagingPath, 'wx', 0o600)
+  const digest = createHash('sha256')
   let received = 0
   try {
     for await (const chunk of req) {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       received += bytes.length
       if (received > expectedBytes || received > maxBytes) throw new RangeError('pasted image body exceeds its declared size')
+      digest.update(bytes)
       await handle.write(bytes)
     }
     if (received !== expectedBytes) {
@@ -191,8 +265,12 @@ async function writeImage(
     }
     await handle.sync()
     await handle.close()
-    await rename(stagingPath, finalPath)
-    return finalPath
+
+    const filename = hashedPastedImageName(rawName, mediaType, digest.digest('hex'))
+    const finalPath = join(directory, filename)
+    ensurePathInside(directory, finalPath)
+    await publishStagedImage(stagingPath, finalPath)
+    return { path: finalPath, filename }
   } catch (error) {
     await handle.close().catch(() => {})
     await rm(stagingPath, { force: true }).catch(() => {})
@@ -465,15 +543,15 @@ export class PastedImageBackend {
       const sessionId = singleQuery(url, 'sessionId')
       const size = declaredSize(url)
       const mediaType = imageMediaType(req)
-      const filename = safePastedImageName(singleQuery(url, 'name'), mediaType)
+      const rawName = singleQuery(url, 'name')
       const contentLength = req.headers['content-length']
       if (contentLength !== undefined && Number(contentLength) !== size) {
         throw new TypeError('Content-Length does not match the declared size')
       }
       const directory = await sessionPasteRoot(this.ctx, sessionId)
-      const writtenPath = await writeImage(req, directory.writeRoot, filename, size, this.runtime.maxImageBytes())
-      const absolutePath = join(directory.visibleRoot, basename(writtenPath))
-      responseJson(res, 201, { ok: true, value: { absolutePath, filename, bytes: size } })
+      const written = await writeImage(req, directory.writeRoot, rawName, mediaType, size, this.runtime.maxImageBytes())
+      const absolutePath = join(directory.visibleRoot, basename(written.path))
+      responseJson(res, 201, { ok: true, value: { absolutePath, filename: written.filename, bytes: size } })
     } catch (error) {
       const status = error instanceof RangeError ? 413 : 400
       this.ctx.logger.warn('dsh-vision-cloud pasted image rejected: %s', message(error))
