@@ -80,4 +80,10 @@ export declare function ImageLightbox(props: {
  * the product view instead of leaving an empty row.
  */
 export declare const UserMessageNodeShadow: import("react").MemoExoticComponent<(props: ChatNodeViewProps) => ReactNode>;
+/**
+ * Slot-safe wrapper around the shadow error boundary. The slot registry
+ * accepts function components most reliably, so this memoized function is what
+ * gets registered for the `user` / `steering` chat-node keys.
+ */
+export declare const UserMessageShadowBoundary: import("react").MemoExoticComponent<(props: ChatNodeViewProps) => ReactNode>;
 //# sourceMappingURL=user-message-view.d.ts.map

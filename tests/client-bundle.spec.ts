@@ -45,6 +45,7 @@ describe('lib/client.js runtime bundle', () => {
     // factories (bundled frontend `staticModules`), stubbed with the values
     // the product build actually uses at module scope.
     register('react', {
+      Component: class {},
       useState: (initial: unknown) => [initial, () => undefined],
       useEffect: () => undefined,
       useCallback: (fn: unknown) => fn,

@@ -883,6 +883,60 @@ describe('clipboard image client', () => {
     bench.dispose()
   })
 
+  it('strips bridge markup from a mixed file+URL paste on a confirmed multimodal verdict (A29 native paste)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    const nativePaste = vi.fn()
+    textarea.addEventListener('paste', nativePaste)
+    const name = 'tile.png'
+    const mark = `[Pasted image available at absolute path: "D:\\agentHome\\.dsh-vision-cloud\\tmp\\pasted-images\\a\\${name}"]\n\n![file.png](<${TILE_URL('session-1', name)}>)`
+    vi.stubGlobal('fetch', fetchWith({}, false, 'unused.png'))
+    await armTakeover()
+
+    const event = fileUrlPasteEvent(TILE_URL('session-1', name), [file('file.png', 'image/png', [1])], mark)
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    await flushTasks()
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft).not.toContain('Pasted image available')
+    expect(snapshot.draft).not.toContain('/_dsh/')
+    expect(nativePaste).toHaveBeenCalledTimes(1)
+    const pasted = nativePaste.mock.calls[0]?.[0] as ClipboardEvent | undefined
+    const pastedText = pasted?.clipboardData?.getData('text/plain') ?? ''
+    expect(pastedText).not.toContain('Pasted image available')
+    expect(pastedText).not.toContain('/_dsh/')
+    expect(pasted?.clipboardData?.files).toHaveLength(1)
+    bench.dispose()
+  })
+
+  it('strips bridge markup from a mixed file+URL drop on a confirmed multimodal verdict (A29 native drop)', async () => {
+    const bench = fakeClient('')
+    const textarea = composer()
+    const nativeDrop = vi.fn()
+    textarea.addEventListener('drop', nativeDrop)
+    const name = 'tile.png'
+    const mark = `[Pasted image available at absolute path: "D:\\agentHome\\.dsh-vision-cloud\\tmp\\pasted-images\\a\\${name}"]\n\n![file.png](<${TILE_URL('session-1', name)}>)`
+    vi.stubGlobal('fetch', fetchWith({}, false, 'unused.png'))
+    await armTakeover()
+
+    const event = fileUrlDropEvent(TILE_URL('session-1', name), [file('file.png', 'image/png', [1])], mark)
+    textarea.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    await flushTasks()
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.draft).not.toContain('Pasted image available')
+    expect(snapshot.draft).not.toContain('/_dsh/')
+    expect(nativeDrop).toHaveBeenCalledTimes(1)
+    const dropped = nativeDrop.mock.calls[0]?.[0] as DragEvent | undefined
+    const droppedText = dropped?.dataTransfer?.getData('text/plain') ?? ''
+    expect(droppedText).not.toContain('Pasted image available')
+    expect(droppedText).not.toContain('/_dsh/')
+    expect(dropped?.dataTransfer?.files).toHaveLength(1)
+    bench.dispose()
+  })
+
   it('ignores non-image clipboard files so ordinary text paste remains native', () => {
     const bench = fakeClient('before ')
     const textarea = composer()
@@ -1188,7 +1242,7 @@ it('reconciles native draft images into bridge refs after switching to a text-on
     expect(bench.input.state.getSnapshot().draft).toContain('描述这张图')
       expect(bench.input.state.getSnapshot().draft.endsWith('\uFFFC')).toBe(true)
     expect(bench.input.state.getSnapshot().draft.match(/\uFFFC/gu)).toHaveLength(1)
-    expect(bench.input.notify).toHaveBeenCalledWith('info', expect.stringContaining('converted to workspace paths'))
+    expect(bench.input.notify).not.toHaveBeenCalledWith('info', expect.stringContaining('converted to workspace paths'))
 
     const codec = bench.source()?.codec
     if (codec === undefined) throw new Error('paste source was not registered')
@@ -1197,6 +1251,61 @@ it('reconciles native draft images into bridge refs after switching to a text-on
     const serialized = await codec.serialize(occurrence.ref, new AbortController().signal)
     expect(serialized).toContain('[Pasted image available at absolute path:')
     expect(serialized).toContain('native.png')
+    bench.dispose()
+  })
+
+  it('cleans leaked bridge markup from the draft when switching native images to bridge refs', async () => {
+    let current: { provider: string; model: string } = { provider: 'abrdns', model: 'Qwen3.8-Max' }
+    const listeners = new Set<() => void>()
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current }),
+        subscribe: (listener: () => void) => {
+          listeners.add(listener)
+          return () => { listeners.delete(listener) }
+        },
+      },
+    }
+    const native = file('native.png', 'image/png', [1, 2, 3])
+    const draftFace = {
+      draftImages: vi.fn(() => [{ id: 'draft-native', file: native, previewUrl: 'blob:native-preview' }]),
+      releaseDraftImages: vi.fn(),
+    }
+    const name = 'native.png'
+    const dirty = `描述一下 [Pasted image available at absolute path: "D:\\tmp\\pasted-images\\${name}"]\n\n![native.png](<${TILE_URL('session-1', name)}>)`
+    const bench = fakeClient(dirty, ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+      conversation: draftFace,
+    })
+    composer()
+    const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          ok: true,
+          value: { absolutePath: 'D:\\workspace\\.dsh-vision-cloud\\tmp\\pasted-images\\a\\native.png' },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      const params = new URL(String(url), 'http://localhost').searchParams
+      return new Response(JSON.stringify({ takeover: params.get('model') === 'DeepSeek-V4-Pro-0813' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await armTakeover()
+    bench.input.addImages(['draft-native'])
+    current = { provider: 'abrdns', model: 'DeepSeek-V4-Pro-0813' }
+    for (const listener of listeners) listener()
+    await flushTasks()
+
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.imageIds).toEqual([])
+    expect(snapshot.occurrences).toHaveLength(1)
+    expect(snapshot.draft).toContain('描述一下')
+    expect(snapshot.draft).not.toContain('Pasted image available')
+    expect(snapshot.draft).not.toContain('/_dsh/')
+    expect(snapshot.draft.match(/\uFFFC/gu)).toHaveLength(1)
     bench.dispose()
   })
 
@@ -1232,6 +1341,155 @@ it('reconciles native draft images into bridge refs after switching to a text-on
       'error',
       'The image bridge is temporarily unreachable; native draft images were left unchanged.',
     )
+    bench.dispose()
+  })
+
+  it('migrates cached-true native ids from the guarded submit path even when the switch reconciler missed them (issue 1)', async () => {
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current: { provider: 'abrdns', model: 'DeepSeek-V4-Pro-0813' } }),
+        subscribe: () => () => {},
+      },
+    }
+    const native = file('native.png', 'image/png', [1, 2, 3])
+    const draftFace = {
+      draftImages: vi.fn(() => [{ id: 'draft-native', file: native, previewUrl: 'blob:native-preview' }]),
+      releaseDraftImages: vi.fn(),
+    }
+    const bench = fakeClient('图', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+      conversation: draftFace,
+    })
+    const original = vi.fn(() => {})
+    ;(bench.input as unknown as { submit?: (mode?: string) => void }).submit = original
+    composer()
+
+    await armTakeover() // prefetch also arms the submit guard through currentPick/inputFor
+    bench.input.addImages(['draft-native'])
+    ;(bench.input as unknown as { submit?: (mode?: string) => void }).submit?.()
+
+    // bridgeNativeDraft mutates synchronously but the guarded submit forwards through the settled promise.
+    expect(draftFace.draftImages).toHaveBeenCalledWith(['draft-native'])
+    expect(original).not.toHaveBeenCalled()
+    await flushTasks()
+
+    expect(original).toHaveBeenCalledTimes(1)
+    expect(bench.input.state.getSnapshot().imageIds).toEqual([])
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+    expect(bench.input.notify).not.toHaveBeenCalledWith('info', expect.stringContaining('converted to workspace paths'))
+    bench.dispose()
+  })
+
+  it('does not leave display-only preview ids on submit-triggered migration (issue 1 regression)', async () => {
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current: { provider: 'abrdns', model: 'DeepSeek-V4-Pro-0813' } }),
+        subscribe: () => () => {},
+      },
+    }
+    const native = file('native.png', 'image/png', [1, 2, 3])
+    const draftFace = {
+      draftImages: vi.fn(() => [{ id: 'draft-native', file: native, previewUrl: 'blob:native-preview' }]),
+      createDraftImages: vi.fn((files: readonly File[]) => files.map((value, index) => ({
+        id: `preview-${index}`,
+        file: value,
+        previewUrl: `blob:preview-${index}`,
+      }))),
+      releaseDraftImages: vi.fn(),
+      releaseDraftImage: vi.fn(),
+    }
+    const bench = fakeClient('图', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+      conversation: draftFace,
+    })
+    const original = vi.fn(() => {})
+    ;(bench.input as unknown as { submit?: (mode?: string) => void }).submit = original
+    composer()
+
+    await armTakeover()
+    bench.input.addImages(['draft-native'])
+    ;(bench.input as unknown as { submit?: (mode?: string) => void }).submit?.()
+
+    expect(original).not.toHaveBeenCalled()
+    await flushTasks()
+
+    expect(original).toHaveBeenCalledTimes(1)
+    // The submit-triggered migration must not leave display-only preview ids behind.
+    expect(bench.input.state.getSnapshot().imageIds).toEqual([])
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+    expect(bench.input.notify).not.toHaveBeenCalledWith('info', expect.stringContaining('converted to workspace paths'))
+    bench.dispose()
+  })
+
+  it('forwards native draft images untouched from the guarded submit path on a fresh multimodal verdict (issue 1)', async () => {
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current: { provider: 'abrdns', model: 'Qwen3.8-Max' } }),
+        subscribe: () => () => {},
+      },
+    }
+    const bench = fakeClient('图', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+    })
+    const original = vi.fn(() => {})
+    ;(bench.input as unknown as { submit?: (mode?: string) => void }).submit = original
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ takeover: false }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })))
+    composer()
+
+    await armTakeover()
+    bench.input.addImages(['draft-native'])
+    ;(bench.input as unknown as { submit?: (mode?: string) => void }).submit?.()
+
+    // The guard must not delay a confirmed native-capable submit.
+    expect(original).toHaveBeenCalledTimes(1)
+    expect(bench.input.state.getSnapshot().imageIds).toEqual(['draft-native'])
+    bench.dispose()
+  })
+
+  it('holds a submit until the undecided verdict resolves true, then migrates native images (issue 1)', async () => {
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current: { provider: 'abrdns', model: 'DeepSeek-V4-Pro-0813' } }),
+        subscribe: () => () => {},
+      },
+    }
+    const native = file('native.png', 'image/png', [1, 2, 3])
+    const draftFace = {
+      draftImages: vi.fn(() => [{ id: 'draft-native', file: native, previewUrl: 'blob:native-preview' }]),
+      releaseDraftImages: vi.fn(),
+    }
+    const bench = fakeClient('图', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+      conversation: draftFace,
+    })
+    const original = vi.fn(() => {})
+    ;(bench.input as unknown as { submit?: (mode?: string) => void }).submit = original
+    let resolveFetch: (response: Response) => void = () => {}
+    const fetchMock = vi.fn(async () => new Promise<Response>(resolve => { resolveFetch = resolve }))
+    vi.stubGlobal('fetch', fetchMock)
+    composer()
+
+    await armTakeover() // starts, but never resolves, the model-capability verdict
+    bench.input.addImages(['draft-native'])
+    ;(bench.input as unknown as { submit?: (mode?: string) => void }).submit?.()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(original).not.toHaveBeenCalled()
+    expect(draftFace.draftImages).not.toHaveBeenCalled()
+
+    resolveFetch(new Response(JSON.stringify({ takeover: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    await flushTasks()
+
+    expect(original).toHaveBeenCalledTimes(1)
+    expect(draftFace.draftImages).toHaveBeenCalledWith(['draft-native'])
+    expect(bench.input.state.getSnapshot().imageIds).toEqual([])
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
     bench.dispose()
   })
 
@@ -1433,12 +1691,12 @@ it('reconciles native draft images into bridge refs after switching to a text-on
   })
 
 
-  it('registers priority -1 shadows for the user and steering chat-node keys', () => {
+  it('registers low-priority shadows for the user and steering chat-node keys', () => {
     const bench = fakeClient('')
     const shadows = bench.registrations.filter(row => row.options.name === 'conversation.chat.node')
     expect(shadows.map(row => row.options.key)).toEqual(['user', 'steering'])
     for (const row of shadows) {
-      expect(row.options.priority).toBe(-1)
+      expect(row.options.priority).toBe(-1000)
       expect(row.options.locale).toBe('conversation')
     }
     bench.dispose()

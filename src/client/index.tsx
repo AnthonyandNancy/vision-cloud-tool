@@ -1,5 +1,5 @@
 /**
- * DSH Vision Cloud browser plugin: a minimal Settings section (pick an app
+ * DSH Vision Tools browser plugin: a minimal Settings section (pick an app
  * model + test read) plus the paste/drop-to-path image bridge. No tool cards,
  * no artifact previews, no credentials.
  */
@@ -25,8 +25,8 @@ const NS = 'vision-cloud'
 const SETTINGS_ROUTE = '/_dsh/vision-cloud/settings'
 
 const en = {
-  nav: 'Vision Cloud',
-  settingsTitle: 'Vision Cloud',
+  nav: 'Vision Tools',
+  settingsTitle: 'Vision Tools',
   settingsIntro: 'Pick a model configured in DSH so vision_cloud_tool can read images through it.',
   model: 'Vision model',
   modelHint: 'Leave "Off" to keep vision_cloud_tool unregistered. Selecting a model registers the tool immediately.',
@@ -66,8 +66,8 @@ const en = {
 type LocaleKey = keyof typeof en
 
 const zh: Record<LocaleKey, string> = {
-  nav: '视觉云',
-  settingsTitle: '视觉云',
+  nav: '视觉工具',
+  settingsTitle: '视觉工具',
   settingsIntro: '选择一个 DSH 应用内已配置的模型，让 vision_cloud_tool 通过它读取图片。',
   model: '视觉模型',
   modelHint: '保持“不开启”则不会注册 vision_cloud_tool；选择模型后立即生效。',
@@ -155,7 +155,7 @@ async function apiRequest<T>(init?: RequestInit): Promise<T> {
   const body = await response.json() as ApiSuccess<T> | ApiFailure
   if (!response.ok || !body.ok) {
     const failure = body as ApiFailure
-    throw new Error(failure.error?.message ?? `Vision Cloud request failed with HTTP ${response.status}`)
+    throw new Error(failure.error?.message ?? `Vision Tools request failed with HTTP ${response.status}`)
   }
   return body.value
 }

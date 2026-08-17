@@ -5,7 +5,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { ImageLightbox, UserMessageNodeShadow } from './user-message-view.tsx'
+import { ImageLightbox, UserMessageShadowBoundary } from './user-message-view.tsx'
 
 const SOURCE = 'vision-cloud-pasted-image'
 export const PASTE_IMAGES_ROUTE = '/_dsh/vision-cloud/paste-images'
@@ -217,6 +217,25 @@ function sanitizeBridgeText(text: string): string {
   return value.replace(/\s+/gu, ' ').trim()
 }
 
+/**
+ * Remove leaked bridge serialization markup from a draft while preserving the
+ * user's real text. Used defensively during model-switch reconciliation: a
+ * multimodal paste/drop of a bridged tile can leave the raw path+markdown in
+ * the draft, and the subsequent native→bridge migration must not keep it.
+ */
+function stripBridgeMarkup(text: string): string {
+  return text
+    .replace(/!\[[^\]]*\]\(<[^)]+>\)/gu, '')
+    .replace(/https?:\/\/[^\s"'<>]*\/_dsh\/vision-cloud\/paste-images\/file\?[^\s"'<>()]+/gu, '')
+    .replace(/\/_dsh\/vision-cloud\/paste-images\/file\?[^\s"'<>()]+/gu, '')
+    .replace(/\[Pasted image available at absolute path: "[^"]*"\]/gu, '')
+    .replace(/\[pasted image: [^\]]*\]/gu, '')
+    .replace(/url-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:-[^.\s"'<>]*)?(?:\.[a-z0-9]{2,5})?(?=[\s"'<>()[\]\\]|$)/giu, '')
+    .replace(/[ \t]+\n/gu, '\n')
+    .replace(/\n{3,}/gu, '\n\n')
+    .trim()
+}
+
 function validateImages(files: readonly File[]): void {
   if (files.length > MAX_IMAGES) throw new Error(`Paste at most ${MAX_IMAGES} images at a time`)
   let total = 0
@@ -249,6 +268,7 @@ export class PasteImageController {
   private readonly nativePreviews = new Map<string, { sessionId: string; ref: string }>()
   private readonly previewUnsubscribes = new Map<string, () => void>()
   private readonly submitGuards = new WeakSet<object>()
+  private readonly pendingSubmitGuards = new WeakSet<object>()
 
   constructor(private readonly ctx: ClientContext) {}
 
@@ -297,6 +317,7 @@ export class PasteImageController {
    * DOM selector label as a legacy fallback (subagent sessions throw here).
    */
   private currentPick(sessionId: string): ModelPick {
+    this.tryArmSubmitGuard(sessionId)
     const service = this.modelDirectoriesService()
     if (service !== undefined) {
       try {
@@ -493,12 +514,13 @@ export class PasteImageController {
     sessionId: string,
     input: ReturnType<PasteImageController['inputFor']>,
     imageIds: readonly string[],
-  ): Promise<void> {
+    admitPreviews = true,
+  ): Promise<boolean> {
     const face = this.conversationDraftService()
     const shell = input as unknown as { removeImage?: (id: string) => void }
     if (typeof face?.draftImages !== 'function' || typeof shell.removeImage !== 'function') {
       input.notify('error', 'The composer draft-image API is unavailable; remove the image and paste it again after selecting a text-only model.')
-      return
+      return false
     }
 
     // Display-only previews created for bridge records must NOT be re-bridged:
@@ -508,12 +530,12 @@ export class PasteImageController {
       if (preview.sessionId === sessionId) previewIds.add(id)
     }
     const nativeImageIds = imageIds.filter(id => !previewIds.has(id))
-    if (nativeImageIds.length === 0) return
+    if (nativeImageIds.length === 0) return false
 
     const attachments = face.draftImages!(nativeImageIds)
     if (attachments.length !== nativeImageIds.length || !this.sameImageIds(nativeImageIds, attachments.map(attachment => attachment.id))) {
       input.notify('error', 'Some native draft images are no longer available; removed them and paste again.')
-      return
+      return false
     }
     const files = attachments.map((attachment, index) =>
       this.cloneDraftFile(attachment.file, attachment.file.name || `clipboard-image-${index + 1}`))
@@ -521,16 +543,21 @@ export class PasteImageController {
 
     // Re-check immediately before the mutation: insert first so a failed CAS
     // rollback leaves the original native ids untouched.
-    const snapshot = input.state.getSnapshot()
-    if (!this.sameImageIds(snapshot.imageIds.filter(id => !previewIds.has(id)), nativeImageIds)) return
+    let snapshot = input.state.getSnapshot()
+    const cleanedDraft = stripBridgeMarkup(snapshot.draft)
+    if (cleanedDraft !== snapshot.draft) {
+      input.setDraft(cleanedDraft)
+      snapshot = input.state.getSnapshot()
+    }
+    if (!this.sameImageIds(snapshot.imageIds.filter(id => !previewIds.has(id)), nativeImageIds)) return false
     const cursor = snapshot.draft.length
-    this.insertRecords(sessionId, input, files, cursor)
+    this.insertRecords(sessionId, input, files, cursor, admitPreviews)
 
     for (const id of nativeImageIds) shell.removeImage!(id)
     try { face.releaseDraftImages?.(attachments) } catch {
       // The migrated bridge records are independent File copies already.
     }
-    input.notify('info', 'The selected model cannot read images directly; the draft images were converted to workspace paths and will be read through the vision tool.')
+    return true
   }
 
   source(): InputTriggerSource {
@@ -560,7 +587,9 @@ export class PasteImageController {
   private inputFor(sessionId: string) {
     const actx = this.ctx.sessions.scope(sessionId as never)
     if (actx === undefined) throw new Error('Open a live session before pasting images')
-    return this.ctx.conversation.input.for(actx)
+    const input = this.ctx.conversation.input.for(actx)
+    this.armSubmitGuard(sessionId, input)
+    return input
   }
 
   private insertText(input: ReturnType<PasteImageController['inputFor']>, text: string, start: number, end = start): number {
@@ -633,6 +662,7 @@ export class PasteImageController {
     input: ReturnType<PasteImageController['inputFor']>,
     files: readonly File[],
     cursor: number,
+    admitPreviews = true,
   ): number {
     const batch: PasteBatch = { sessionId, records: [] }
     for (const file of files) {
@@ -645,7 +675,9 @@ export class PasteImageController {
 
     // Prefer the host’s native in-card attachment rail; the custom dock above the composer
     // stays available as an error/fallback surface when the draft-image API is absent.
-    this.admitNativePreviews(sessionId, input, batch.records)
+    // Submit-triggered migrations pass false: the message is leaving immediately, so
+    // re-adding display-only previews would only race with the submit guard.
+    if (admitPreviews) this.admitNativePreviews(sessionId, input, batch.records)
     return next
   }
 
@@ -696,24 +728,151 @@ export class PasteImageController {
   }
 
   /**
+   * Try to arm the shell's single submit entry for a session. currentPick
+   * invokes this on paste/drop and model-directory refreshes, so the guard is
+   * present as soon as the composer is known — including the issue-1 path
+   * where a multimodal paste never admitted a display preview.
+   */
+  private tryArmSubmitGuard(sessionId: string): void {
+    try { this.inputFor(sessionId) } catch {
+      // No live composer scope for this session yet.
+    }
+  }
+
+  /**
    * Patch the host's single submit entry for a session shell. Both the
    * composer send control (shell.actions.submit) and the public facade
    * (ctx.conversation.input.for(...).submit) resolve through this method.
+   *
+   * This wrapper is the last-line guarantee for issue 1: the Host validates
+   * the outgoing content synchronously at prompt time and refuses the whole
+   * request as MODEL_DOES_NOT_SUPPORT_IMAGES whenever a native image block
+   * accompanies a text-only selection. Model-store reconciliation is async by
+   * contract, so a fast model-switch + send can beat the migration. Here the
+   * wrapper strips display-only preview ids, then:
+   * - fresh takeover=false: keep native images and submit untouched;
+   * - fresh takeover=true: migrate the remaining native ids to bridge refs
+   *   and submit only after the mutation succeeds;
+   * - unknown/pending: hold this submit, fetch the verdict, migrate on true,
+   *   submit untouched on false, and stop rather than hand the Host an image
+   *   block it is known to reject when the bridge is unreachable.
    */
-  private armNativePreviewSubmit(
-    sessionId: string,
-    input: ReturnType<PasteImageController['inputFor']>,
-    face: ConversationDraftFace,
-  ): void {
+  private armSubmitGuard(sessionId: string, input: ReturnType<PasteImageController['inputFor']>): void {
     if (this.submitGuards.has(input as object)) return
     const shell = input as unknown as { submit?: (mode?: string) => void }
     if (typeof shell.submit !== 'function') return
     this.submitGuards.add(input as object)
     const original = shell.submit
-    shell.submit = (mode?: string) => {
-      this.dropNativePreviews(sessionId, input, face)
-      original.call(shell, mode)
+    shell.submit = (mode?: string): void => { this.guardedSubmit(sessionId, input, shell, original, mode) }
+  }
+
+  /** Re-enable and forward a guarded submit, then clear its pending flag. */
+  private releaseSubmit(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    shell: unknown,
+    original: (this: unknown, mode?: string) => void,
+    mode: string | undefined,
+  ): void {
+    // Safety net: never forward display-only preview ids to the host submit.
+    // A submit-triggered migration may have just re-added them; they must be
+    // stripped before the text-only model sees the request.
+    const face = this.conversationDraftService()
+    if (face !== undefined) this.dropNativePreviews(sessionId, input, face)
+
+    this.pendingSubmitGuards.delete(input as object)
+    if (input.state.getSnapshot().phase !== 'plain') return
+    original.call(shell, mode)
+  }
+
+  /** Migrate cached-true native ids and submit exactly once on success. */
+  private submitBridged(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    shell: unknown,
+    original: (this: unknown, mode?: string) => void,
+    mode: string | undefined,
+    nativeIds: readonly string[],
+  ): void {
+    if (this.pendingSubmitGuards.has(input as object)) return
+    this.pendingSubmitGuards.add(input as object)
+    const release = (): void => this.releaseSubmit(sessionId, input, shell, original, mode)
+    void this.bridgeNativeDraft(sessionId, input, nativeIds, false).then(
+      (ok: boolean) => {
+        if (ok) release()
+        else this.pendingSubmitGuards.delete(input as object)
+      },
+      (error: unknown) => {
+        this.pendingSubmitGuards.delete(input as object)
+        input.notify('error', message(error))
+      },
+    )
+  }
+
+  /**
+   * One guarded submit pass. It never forwards a native image block to a
+   * model that the current capability verdict says is text-only.
+   */
+  private guardedSubmit(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    shell: unknown,
+    original: (this: unknown, mode?: string) => void,
+    mode: string | undefined,
+  ): void {
+    const face = this.conversationDraftService()
+    if (face !== undefined) this.dropNativePreviews(sessionId, input, face)
+    const snapshot = input.state.getSnapshot()
+    if (snapshot.phase !== 'plain') { original.call(shell, mode); return }
+
+    const pick = this.currentPick(sessionId)
+    const key = this.verdictKey(sessionId, pick)
+    if (key === undefined) { original.call(shell, mode); return }
+
+    const previewIds = new Set<string>()
+    for (const [id, preview] of this.nativePreviews) {
+      if (preview.sessionId === sessionId) previewIds.add(id)
     }
+    const imageIds = snapshot.imageIds as unknown as readonly string[]
+    const nativeIds = imageIds.filter(id => !previewIds.has(id))
+    if (nativeIds.length === 0) { original.call(shell, mode); return }
+
+    const cached = this.verdicts.get(key)
+    if (cached !== undefined && !cached.pending && cached.takeover !== undefined
+      && cached.at > 0 && Date.now() - cached.at <= this.VERDICT_MAX_AGE_MS) {
+      if (cached.takeover) this.submitBridged(sessionId, input, shell, original, mode, nativeIds)
+      else original.call(shell, mode)
+      return
+    }
+
+    // Unknown capability: don't leak the native block into prompt validation.
+    if (this.pendingSubmitGuards.has(input as object)) return
+    this.pendingSubmitGuards.add(input as object)
+    void (async () => {
+      try {
+        const verdict = await this.refreshVerdict(sessionId, pick)
+        // The selection may have changed while the verdict was in flight.
+        if (this.verdictKey(sessionId, this.currentPick(sessionId)) !== key) return
+        const now = input.state.getSnapshot()
+        if (now.phase !== 'plain') return
+        const nowImageIds = now.imageIds as unknown as readonly string[]
+        const nowNativeIds = nowImageIds.filter(id => !previewIds.has(id))
+        if (nowNativeIds.length === 0) { this.releaseSubmit(sessionId, input, shell, original, mode); return }
+        if (verdict === undefined) { this.notifyBridgeDown(input); return }
+        if (verdict !== true) { this.releaseSubmit(sessionId, input, shell, original, mode); return }
+        const migrated = await this.bridgeNativeDraft(sessionId, input, nowNativeIds, false)
+        if (!migrated) return
+        this.releaseSubmit(sessionId, input, shell, original, mode)
+      } catch (error) {
+        this.pendingSubmitGuards.delete(input as object)
+        input.notify('error', message(error))
+      } finally {
+        this.pendingSubmitGuards.delete(input as object)
+      }
+    })().catch(error => {
+      this.pendingSubmitGuards.delete(input as object)
+      input.notify('error', message(error))
+    })
   }
 
   /** Remove the bridge occurrence for one ref (native preview was removed). */
@@ -804,7 +963,7 @@ export class PasteImageController {
         face.releaseDraftImages?.(attachments)
         return false
       }
-      this.armNativePreviewSubmit(sessionId, input, face)
+      this.armSubmitGuard(sessionId, input)
       for (const [index, record] of pending.entries()) {
         const id = ids[index]!
         this.nativePreviews.set(id, { sessionId, ref: record.ref })
@@ -1034,13 +1193,28 @@ export class PasteImageController {
       return true
     }
 
-    if (cached === false) return false
-
     const input = this.inputFor(sessionId)
     const snapshot = input.state.getSnapshot()
     const start = Math.max(0, Math.min(target.selectionStart ?? snapshot.draft.length, snapshot.draft.length))
     const end = Math.max(start, Math.min(target.selectionEnd ?? start, snapshot.draft.length))
     const text = (event.clipboardData?.getData('text/plain') ?? '').replaceAll('\uFFFC', '')
+
+    if (cached === false) {
+      // Confirmed multimodal: let the host add the image natively, but never
+      // let a bridged-tile payload leak its raw path/markdown into the draft
+      // (A29 mixed payload on the native verdict path).
+      if (refs.length === 0) return false
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      if (snapshot.phase !== 'plain') return true
+      try {
+        this.releaseNatively(input, files, sanitizeBridgeText(text), start, end, target, 'paste')
+      } catch (error) {
+        input.notify('error', message(error))
+      }
+      return true
+    }
 
     if (cached === true) {
       event.preventDefault()
@@ -1138,13 +1312,29 @@ export class PasteImageController {
       return true
     }
 
-    if (cached === false) return false
-
     const input = this.inputFor(sessionId)
     const snapshot = input.state.getSnapshot()
     const start = Math.max(0, Math.min(textarea.selectionStart ?? snapshot.draft.length, snapshot.draft.length))
     const end = Math.max(start, Math.min(textarea.selectionEnd ?? start, snapshot.draft.length))
     const text = (event.dataTransfer?.getData('text/plain') ?? '').replaceAll('\uFFFC', '')
+
+    if (cached === false) {
+      // Confirmed multimodal: let the host add the image natively, but never
+      // let a bridged-tile payload leak its raw path/markdown into the draft
+      // (A29 mixed payload on the native verdict path).
+      if (refs.length === 0) return false
+      event.preventDefault()
+      event.stopPropagation()
+      event.stopImmediatePropagation()
+      window.dispatchEvent(new Event('dragend'))
+      if (snapshot.phase !== 'plain') return true
+      try {
+        this.releaseNatively(input, files, sanitizeBridgeText(text), start, end, textarea, 'drop')
+      } catch (error) {
+        input.notify('error', message(error))
+      }
+      return true
+    }
 
     // The native DSH drop handler normally resets its drag overlay here; since
     // this capture-phase takeover stops that handler, tell it to reset now.
@@ -1512,25 +1702,26 @@ export function installPasteImages(ctx: ClientContext): void {
       remove: (occurrence: PasteOccurrence) => { controller.remove(String(sessionId), occurrence) },
     }),
   }, PasteImageDock))
-  // Shadow the product's keyed user/steering message views at priority -1
-  // (DSH renders the lowest-priority live entry per keyed cell). While
-  // installed, bridged paste-to-path messages render as image tiles plus
+  // Shadow the product's keyed user/steering message views at a very low
+  // priority (DSH renders the lowest-priority live entry per keyed cell).
+  // While installed, bridged paste-to-path messages render as image tiles plus
   // clean text instead of leaking the model-facing path markup, and every
-  // other user message is re-rendered to match the product bubble. A render
-  // error abdicates this entry and the product view takes the seat back.
+  // other user message is re-rendered to match the product bubble. The error
+  // boundary keeps this entry mounted even if a host UI primitive is missing,
+  // so the product's raw-text view cannot take the seat back.
   ctx.slots.inject('conversation.chat.node', () => {
     const disposeUser = ctx.slots.register({
       name: 'conversation.chat.node',
       key: 'user',
-      priority: -1,
+      priority: -1000,
       locale: 'conversation',
-    }, UserMessageNodeShadow)
+    }, UserMessageShadowBoundary)
     const disposeSteering = ctx.slots.register({
       name: 'conversation.chat.node',
       key: 'steering',
-      priority: -1,
+      priority: -1000,
       locale: 'conversation',
-    }, UserMessageNodeShadow)
+    }, UserMessageShadowBoundary)
     return () => { disposeSteering(); disposeUser() }
   })
 }

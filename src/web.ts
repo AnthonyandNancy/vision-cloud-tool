@@ -247,7 +247,7 @@ export class VisionToolkitWebBackend {
         responseJson(res, 200, { ok: true, value: await this.snapshot() })
       } catch (error) {
         this.ctx.logger.warn('dsh-vision-cloud Settings snapshot failed: %s', publicMessage(error))
-        requestError(res, 503, 'settings-unavailable', 'Vision Cloud Settings are unavailable')
+        requestError(res, 503, 'settings-unavailable', 'Vision Tools Settings are unavailable')
       }
       return
     }

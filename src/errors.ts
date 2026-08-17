@@ -3,7 +3,7 @@
  * @module dsh-vision-cloud/errors
  */
 
-/** Discriminant tag for every Vision Cloud failure. */
+/** Discriminant tag for every Vision Tools failure. */
 export const VISION_TOOLKIT_ERROR_CODES = [
   'config',
   'input',

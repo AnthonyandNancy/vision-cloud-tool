@@ -1,6 +1,6 @@
 {
   "name": "dsh-vision-cloud",
-  "version": "0.1.7",
+  "version": "0.1.10",
   "description": "DeepSeek Harness-native online vision tool: read images through the app's configured model with modlens v2 structured output.",
   "keywords": [
     "deepseek",

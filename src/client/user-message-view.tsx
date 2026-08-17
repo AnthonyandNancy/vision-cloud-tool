@@ -21,7 +21,7 @@
  */
 
 import { createPortal } from 'react-dom'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   IconCheckOutline16,
   IconCloseOutline16,
@@ -402,4 +402,71 @@ export const UserMessageNodeShadow = memo(function UserMessageNodeShadow(props: 
     </div>
     <MessageActions text={bridge.text} time={data.time} t={t as unknown as ShadowTranslate | undefined} />
   </div>
+})
+
+/**
+ * Primitive-only fallback used when the full shadow renderer throws (for
+ * example a host build missing an optional UI primitive). It still strips the
+ * bridge path/markdown and shows the image, so the product's raw text never
+ * leaks even in the error path.
+ */
+function FallbackUserMessage(props: ChatNodeViewProps): ReactNode {
+  const data = (props.node?.data ?? {}) as ShadowNodeData
+  const content = Array.isArray(data.content) ? data.content : []
+  const split = splitContent(content)
+  const bridge = extractBridgeMarkup(split.text)
+  const items: GalleryItem[] = [
+    ...split.images.map((attachment, index) => ({ kind: 'native' as const, attachment, name: attachment.name ?? `image-${index + 1}` })),
+    ...bridge.images.map((item, index) => ({ kind: 'bridge' as const, item, name: item.alt || `pasted-image-${index + 1}` })),
+  ]
+  return <div className="dvt-user-row" data-time-hover-root>
+    <div className="dvt-user-stack">
+      {items.map((item, index) => {
+        if (item.kind === 'bridge') {
+          return <img
+            key={`bridge-${index}`}
+            className="dvt-img-frame"
+            src={item.item.url}
+            alt={item.name}
+            style={{ maxWidth: 240, borderRadius: 14 }}
+          />
+        }
+        return <span key={`native-${index}`} className="dvt-img-text">{item.name}</span>
+      })}
+      {bridge.text !== '' && <div className="dvt-bubble">{bridge.text}</div>}
+    </div>
+  </div>
+}
+
+/**
+ * Error boundary around the shadow renderer. A render failure abdicates the
+ * raw slot entry and silently restores the product's raw-text bubble, which is
+ * exactly what we must avoid for bridged images. This boundary keeps the
+ * plugin's clean user-message view mounted and falls back to a primitive-only
+ * renderer instead of letting the product view leak bridge markup.
+ */
+class UserMessageShadowBoundaryClass extends Component<ChatNodeViewProps, { failed: boolean }> {
+  override state = { failed: false }
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+
+  override componentDidCatch(error: unknown): void {
+    console.warn('dsh-vision-cloud user message shadow failed; using fallback renderer', error)
+  }
+
+  override render(): ReactNode {
+    if (this.state.failed) return <FallbackUserMessage {...this.props} />
+    return <UserMessageNodeShadow {...this.props} />
+  }
+}
+
+/**
+ * Slot-safe wrapper around the shadow error boundary. The slot registry
+ * accepts function components most reliably, so this memoized function is what
+ * gets registered for the `user` / `steering` chat-node keys.
+ */
+export const UserMessageShadowBoundary = memo(function UserMessageShadowBoundary(props: ChatNodeViewProps): ReactNode {
+  return <UserMessageShadowBoundaryClass {...props} />
 })

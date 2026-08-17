@@ -41,6 +41,7 @@ export declare class PasteImageController {
     private readonly nativePreviews;
     private readonly previewUnsubscribes;
     private readonly submitGuards;
+    private readonly pendingSubmitGuards;
     constructor(ctx: ClientContext);
     subscribe: (listener: () => void) => (() => void);
     snapshot: () => number;
@@ -122,11 +123,40 @@ export declare class PasteImageController {
      */
     private dropNativePreviews;
     /**
+     * Try to arm the shell's single submit entry for a session. currentPick
+     * invokes this on paste/drop and model-directory refreshes, so the guard is
+     * present as soon as the composer is known — including the issue-1 path
+     * where a multimodal paste never admitted a display preview.
+     */
+    private tryArmSubmitGuard;
+    /**
      * Patch the host's single submit entry for a session shell. Both the
      * composer send control (shell.actions.submit) and the public facade
      * (ctx.conversation.input.for(...).submit) resolve through this method.
+     *
+     * This wrapper is the last-line guarantee for issue 1: the Host validates
+     * the outgoing content synchronously at prompt time and refuses the whole
+     * request as MODEL_DOES_NOT_SUPPORT_IMAGES whenever a native image block
+     * accompanies a text-only selection. Model-store reconciliation is async by
+     * contract, so a fast model-switch + send can beat the migration. Here the
+     * wrapper strips display-only preview ids, then:
+     * - fresh takeover=false: keep native images and submit untouched;
+     * - fresh takeover=true: migrate the remaining native ids to bridge refs
+     *   and submit only after the mutation succeeds;
+     * - unknown/pending: hold this submit, fetch the verdict, migrate on true,
+     *   submit untouched on false, and stop rather than hand the Host an image
+     *   block it is known to reject when the bridge is unreachable.
      */
-    private armNativePreviewSubmit;
+    private armSubmitGuard;
+    /** Re-enable and forward a guarded submit, then clear its pending flag. */
+    private releaseSubmit;
+    /** Migrate cached-true native ids and submit exactly once on success. */
+    private submitBridged;
+    /**
+     * One guarded submit pass. It never forwards a native image block to a
+     * model that the current capability verdict says is text-only.
+     */
+    private guardedSubmit;
     /** Remove the bridge occurrence for one ref (native preview was removed). */
     private removeBridgeOccurrence;
     /**
