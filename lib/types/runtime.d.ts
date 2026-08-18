@@ -7,6 +7,7 @@
  * @module dsh-vision-cloud/runtime
  */
 import type { Context } from '@deepseek-ai/cordis';
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment';
 import type { ResolvedVisionToolkitConfig } from './config.ts';
 import { type VisionResult } from './vision-schema.ts';
 /** Validated image metadata retained in structured results and diagnostics. */
@@ -68,6 +69,13 @@ export declare class Semaphore {
     acquire(signal: AbortSignal): Promise<void>;
     release(): void;
 }
+/**
+ * Find a pasted image attachment's full reference in the session history.
+ * Recursively scans `data.content`, `data.message.content`, nested
+ * `tool-result` blocks and other wrappers so attachments do not go missing
+ * when a host version nests message content one level deeper.
+ */
+export declare function findImageRef(session: VisionSession | undefined, attachmentId: string): ImageAttachmentRef | undefined;
 /** Runtime facade used by the `vision_cloud_tool` and the Settings self-test. */
 export declare class VisionToolkitRuntime {
     private readonly ctx;

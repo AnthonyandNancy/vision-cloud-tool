@@ -328,24 +328,48 @@ function normalizeAttachmentId(value: string): string {
   return value.replace(/^sha256:/u, '').trim()
 }
 
-/** Find a pasted image attachment's full reference in the session history. */
-function findImageRef(session: VisionSession | undefined, attachmentId: string): ImageAttachmentRef | undefined {
+/** Whether a value carries a usable `ImageAttachmentRef`. */
+function isImageAttachmentRef(value: unknown): value is ImageAttachmentRef {
+  if (typeof value !== 'object' || value === null) return false
+  const attachmentId = (value as { attachmentId?: unknown }).attachmentId
+  return typeof attachmentId === 'string' && attachmentId !== ''
+}
+
+/**
+ * Find a pasted image attachment's full reference in the session history.
+ * Recursively scans `data.content`, `data.message.content`, nested
+ * `tool-result` blocks and other wrappers so attachments do not go missing
+ * when a host version nests message content one level deeper.
+ */
+export function findImageRef(session: VisionSession | undefined, attachmentId: string): ImageAttachmentRef | undefined {
   if (session === undefined || !Array.isArray(session.events)) return undefined
   const wanted = normalizeAttachmentId(attachmentId)
-  for (const event of session.events) {
-    if (typeof event !== 'object' || event === null) continue
-    const content = (event as { data?: { content?: unknown } }).data?.content
-    if (!Array.isArray(content)) continue
-    for (const block of content) {
-      if (typeof block !== 'object' || block === null) continue
-      const candidate = block as { type?: string; attachment?: ImageAttachmentRef }
-      if (candidate.type !== 'image' || candidate.attachment === undefined) continue
-      if (normalizeAttachmentId(String(candidate.attachment.attachmentId)) === wanted) {
-        return candidate.attachment
+  const seen = new WeakSet<object>()
+  const scan = (value: unknown, depth: number): ImageAttachmentRef | undefined => {
+    if (depth <= 0) return undefined
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const hit = scan(item, depth - 1)
+        if (hit !== undefined) return hit
       }
+      return undefined
     }
+    if (typeof value !== 'object' || value === null || seen.has(value)) return undefined
+    seen.add(value)
+    const candidate = value as { type?: unknown; attachment?: unknown }
+    if (candidate.type === 'image' && isImageAttachmentRef(candidate.attachment)) {
+      if (normalizeAttachmentId(String(candidate.attachment.attachmentId)) === wanted) return candidate.attachment
+      return undefined
+    }
+    for (const key of ['content', 'message', 'data', 'result', 'tool_result', 'events'] as const) {
+      const nested: unknown = (value as Record<string, unknown>)[key]
+      if (nested === value || nested === undefined || nested === null) continue
+      const hit = scan(nested, depth - 1)
+      if (hit !== undefined) return hit
+    }
+    return undefined
   }
-  return undefined
+  return scan(session.events, 32)
 }
 
 function parseVisionJson(text: string): unknown {
