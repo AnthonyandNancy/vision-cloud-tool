@@ -6,13 +6,9 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
 declare const en: {
     readonly nav: "Vision Tools";
-    readonly settingsTitle: "Vision Tools";
-    readonly settingsIntro: "Pick a model configured in DSH so vision_cloud_tool can read images through it.";
     readonly model: "Vision model";
-    readonly modelHint: "Leave \"Off\" to keep vision_cloud_tool unregistered. Selecting a model registers the tool immediately.";
+    readonly modelHint: "Leave \"Off\" to keep vision_cloud_tool unregistered. Selecting a model registers the tool immediately. Only models that accept image input are listed.";
     readonly off: "Off (disabled)";
-    readonly provider: "Provider";
-    readonly modelName: "Model";
     readonly testRead: "Test read";
     readonly testing: "Testing…";
     readonly save: "Save and apply";
@@ -30,7 +26,6 @@ declare const en: {
     readonly maxImages: "Maximum images per call";
     readonly allowedDirs: "Additional allowed directories";
     readonly allowedDirsHint: "One path per line. The session workspace is always allowed.";
-    readonly pluginVersion: "Plugin";
     readonly positiveInteger: "{field} must be a positive integer.";
     readonly testOk: "Test read succeeded.";
     readonly testFailed: "Test read failed";
@@ -38,8 +33,8 @@ declare const en: {
     readonly pasteToPath: "Paste/drop-to-path bridge";
     readonly pasteToPathHint: "Convert pasted or dropped images into workspace paths for text-only models. Leave off to keep image input native.";
     readonly reasoningEffort: "Thinking effort";
-    readonly reasoningDefault: "Default (model default)";
-    readonly imageCapableOnlyHint: "Only models that accept image input are listed here.";
+    readonly reasoningEffortHint: "Pick the reasoning effort the vision model runs with.";
+    readonly reasoningDefault: "Default";
     readonly modelUnsupportedLabel: "no image input";
 };
 type LocaleKey = keyof typeof en;

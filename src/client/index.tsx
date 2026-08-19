@@ -10,7 +10,13 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
-import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  Button,
+  IconChevronDownOutline14,
+  Input,
+  Menu,
+  type MenuEntry,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-settings/types'
@@ -26,13 +32,9 @@ const SETTINGS_ROUTE = '/_dsh/vision-cloud/settings'
 
 const en = {
   nav: 'Vision Tools',
-  settingsTitle: 'Vision Tools',
-  settingsIntro: 'Pick a model configured in DSH so vision_cloud_tool can read images through it.',
   model: 'Vision model',
-  modelHint: 'Leave "Off" to keep vision_cloud_tool unregistered. Selecting a model registers the tool immediately.',
+  modelHint: 'Leave "Off" to keep vision_cloud_tool unregistered. Selecting a model registers the tool immediately. Only models that accept image input are listed.',
   off: 'Off (disabled)',
-  provider: 'Provider',
-  modelName: 'Model',
   testRead: 'Test read',
   testing: 'Testing…',
   save: 'Save and apply',
@@ -50,7 +52,6 @@ const en = {
   maxImages: 'Maximum images per call',
   allowedDirs: 'Additional allowed directories',
   allowedDirsHint: 'One path per line. The session workspace is always allowed.',
-  pluginVersion: 'Plugin',
   positiveInteger: '{field} must be a positive integer.',
   testOk: 'Test read succeeded.',
   testFailed: 'Test read failed',
@@ -58,8 +59,8 @@ const en = {
   pasteToPath: 'Paste/drop-to-path bridge',
   pasteToPathHint: 'Convert pasted or dropped images into workspace paths for text-only models. Leave off to keep image input native.',
   reasoningEffort: 'Thinking effort',
-  reasoningDefault: 'Default (model default)',
-  imageCapableOnlyHint: 'Only models that accept image input are listed here.',
+  reasoningEffortHint: 'Pick the reasoning effort the vision model runs with.',
+  reasoningDefault: 'Default',
   modelUnsupportedLabel: 'no image input',
 } as const
 
@@ -67,13 +68,9 @@ type LocaleKey = keyof typeof en
 
 const zh: Record<LocaleKey, string> = {
   nav: '视觉工具',
-  settingsTitle: '视觉工具',
-  settingsIntro: '选择一个 DSH 应用内已配置的模型，让 vision_cloud_tool 通过它读取图片。',
   model: '视觉模型',
-  modelHint: '保持“不开启”则不会注册 vision_cloud_tool；选择模型后立即生效。',
-  off: '不开启（默认）',
-  provider: '服务商',
-  modelName: '模型',
+  modelHint: '保持“不启用”则不会注册 vision_cloud_tool；选择模型后立即生效。此处仅列出支持图片输入的模型。',
+  off: '不启用（默认）',
   testRead: '测试读取',
   testing: '测试中…',
   save: '保存设置',
@@ -91,16 +88,15 @@ const zh: Record<LocaleKey, string> = {
   maxImages: '单次调用最多图片数',
   allowedDirs: '允许读取的其他目录',
   allowedDirsHint: '每行一个目录；会话工作目录始终可用。',
-  pluginVersion: '插件版本',
   positiveInteger: '{field}必须为正整数。',
   testOk: '测试读取成功。',
   testFailed: '测试读取失败',
   noModel: '请先选择视觉模型并保存，再测试读取。',
   pasteToPath: '粘贴/拖拽路径桥',
-  pasteToPathHint: '把粘贴或拖拽的图片转换为工作区路径（供纯文本模型使用）。关闭则图片输入保持原生附件。',
+  pasteToPathHint: '把粘贴或拖入的图片复制到会话工作区，并插入工作区路径。关闭则图片输入保持原生附件。',
   reasoningEffort: '思考程度',
-  reasoningDefault: '默认（模型默认）',
-  imageCapableOnlyHint: '此处仅列出支持图片输入的模型。',
+  reasoningEffortHint: '选择视觉模型使用的 reasoning effort。',
+  reasoningDefault: '默认',
   modelUnsupportedLabel: '不支持图片',
 }
 
@@ -299,8 +295,91 @@ interface SettingsInjected {
 
 type SettingsProps = PropsRuntime<'settings.section'> & Partial<SettingsInjected>
 
-function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string | undefined }) {
-  return <label className="dvt-field"><span>{label}</span>{children}{hint === undefined ? null : <small>{hint}</small>}</label>
+/**
+ * One DSH settings row: title + description on the left, control on the right,
+ * closed by the native hairline separator (mirrors DSH PermissionRow).
+ */
+function SettingsRow({ title, description, control }: {
+  title: string
+  description?: string | undefined
+  control: ReactNode
+}) {
+  return (
+    <div className="dvt-row">
+      <div className="dvt-row-text">
+        <div className="dvt-row-title">{title}</div>
+        {description === undefined ? null : <div className="dvt-row-desc">{description}</div>}
+      </div>
+      <div className="dvt-row-control">{control}</div>
+    </div>
+  )
+}
+
+/**
+ * DSH selector pill opening a native Menu: the single dropdown used by the
+ * vision model, thinking effort, and output language rows.
+ */
+function SettingsMenu({ label, entries, selectedId, onSelect, disabled, ariaLabel }: {
+  label: string
+  entries: readonly MenuEntry[]
+  selectedId: string
+  onSelect: (id: string) => void
+  disabled?: boolean | undefined
+  ariaLabel: string
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <Menu
+      open={open}
+      onClose={() => { setOpen(false) }}
+      items={entries}
+      selectedId={selectedId}
+      onSelect={(id) => {
+        setOpen(false)
+        onSelect(id)
+      }}
+      align="end"
+      portal
+      anchor={(
+        <button
+          type="button"
+          className="dvt-selector"
+          aria-label={ariaLabel}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          disabled={disabled}
+          onClick={() => { setOpen(value => !value) }}
+        >
+          <span className="dvt-selector-label">{label}</span>
+          <IconChevronDownOutline14 className="dvt-selector-chevron" />
+        </button>
+      )}
+    />
+  )
+}
+
+/** DSH-styled switch for a boolean row (no native Switch primitive exists). */
+function SettingsSwitch({ checked, onChange, disabled, ariaLabel }: {
+  checked: boolean
+  onChange: (next: boolean) => void
+  disabled?: boolean | undefined
+  ariaLabel: string
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      className="dvt-switch"
+      aria-label={ariaLabel}
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => { onChange(!checked) }}
+    >
+      <span className="dvt-switch-track" data-on={checked ? 'true' : undefined} aria-hidden="true">
+        <span className="dvt-switch-thumb" />
+      </span>
+    </button>
+  )
 }
 
 /** Encode a provider+model pair into one selectable option value. */
@@ -362,103 +441,197 @@ function LoadedSettings({ controller, t }: SettingsInjected) {
     }
   }
 
+  // Provider names become Menu group labels; only image-capable models are
+  // selectable rows, exactly as the old optgroup filter did.
+  const modelEntries: MenuEntry[] = [{ id: '', label: t('off') }]
+  if (selectedModel !== undefined && !selectedModel.inputModalities.includes('image')) {
+    modelEntries.push({
+      id: modelKey(draft.provider, draft.model),
+      label: `${selectedModel.name} · ${t('modelUnsupportedLabel')}`,
+      disabled: true,
+    })
+  }
+  for (const entry of providers) {
+    const models = entry.models.filter(model => model.inputModalities.includes('image'))
+    if (models.length === 0) continue
+    modelEntries.push({ type: 'label', id: `group:${entry.provider}`, text: entry.name })
+    for (const model of models) {
+      modelEntries.push({ id: modelKey(entry.provider, model.id), label: model.name })
+    }
+  }
+  const selectedModelId = draft.provider !== '' && draft.model !== '' ? modelKey(draft.provider, draft.model) : ''
+  const modelLabel = selectedModel?.name ?? (draft.model === '' ? t('off') : draft.model)
+
   return (
     <div className="dvt-settings">
-      <header className="dvt-settings-header">
-        <div><span className="dvt-kicker">DSH plugin</span><h2>{t('settingsTitle')}</h2><p>{t('settingsIntro')}</p></div>
-        <div className="dvt-release"><span>{t('pluginVersion')} <strong>{snapshot.pluginVersion}</strong></span></div>
-      </header>
       {!snapshot.writable ? <div className="dvt-alert warning">{t('readOnly')}</div> : null}
       {draftError === undefined ? null : <div className="dvt-alert error">{draftError}</div>}
       {state.error === undefined ? null : <div className="dvt-alert error">{state.error}</div>}
       {state.message === 'saved' ? <div className="dvt-alert success">{t('saved')}</div> : null}
       {state.message === 'testOk' ? <div className="dvt-alert success">{t('testOk')}</div> : null}
 
-      <section className="dvt-panel dvt-essential">
-        <div className="dvt-panel-title"><div><h3>{t('model')}</h3><p>{t('modelHint')}</p></div><span className={`dvt-badge ${snapshot.enabled ? 'ok' : 'error'}`}>{snapshot.enabled && draft.model !== '' ? draft.model : t('off')}</span></div>
-        <Field label={t('model')} hint={t('imageCapableOnlyHint')}>
-          <select
-            className="dvt-select"
-            aria-label={t('model')}
+      <SettingsRow
+        title={t('model')}
+        description={t('modelHint')}
+        control={(
+          <SettingsMenu
+            ariaLabel={t('model')}
+            label={modelLabel}
+            entries={modelEntries}
+            selectedId={selectedModelId}
             disabled={!snapshot.writable || busy}
-            value={draft.provider !== '' && draft.model !== '' ? modelKey(draft.provider, draft.model) : ''}
-            onChange={(event) => { applyModelSelection(event.target.value) }}
-          >
-            <option value="">{t('off')}</option>
-            {selectedModel !== undefined && !selectedModel.inputModalities.includes('image')
-              ? <option value={modelKey(draft.provider, draft.model)} disabled>{selectedModel.name} · {t('modelUnsupportedLabel')}</option>
-              : null}
-            {providers.map(entry => (
-              <optgroup key={entry.provider} label={entry.name}>
-                {entry.models
-                  .filter(model => model.inputModalities.includes('image'))
-                  .map(model => (
-                    <option key={model.id} value={modelKey(entry.provider, model.id)}>{model.name}</option>
-                  ))}
-              </optgroup>
-            ))}
-          </select>
-        </Field>
-        {reasoningEfforts.length > 0 ? (
-          <Field label={t('reasoningEffort')}>
-            <select
-              className="dvt-select"
-              aria-label={t('reasoningEffort')}
-              disabled={busy || draft.model === ''}
-              value={draft.reasoningEffort}
-              onChange={(event) => { update('reasoningEffort', event.target.value) }}
-            >
-              <option value="">{t('reasoningDefault')}</option>
-              {reasoningEfforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
-            </select>
-          </Field>
-        ) : null}
-        <label className="dvt-check">
-          <input type="checkbox" checked={draft.pasteToPath} disabled={busy} onChange={(event) => { update('pasteToPath', event.target.checked) }} />
-          <span>{t('pasteToPath')}</span>
-          <small>{t('pasteToPathHint')}</small>
-        </label>
-      </section>
+            onSelect={applyModelSelection}
+          />
+        )}
+      />
 
-      <div className="dvt-save-row">
+      {reasoningEfforts.length > 0 ? (
+        <SettingsRow
+          title={t('reasoningEffort')}
+          description={t('reasoningEffortHint')}
+          control={(
+            <SettingsMenu
+              ariaLabel={t('reasoningEffort')}
+              label={draft.reasoningEffort === '' ? t('reasoningDefault') : draft.reasoningEffort}
+              entries={[
+                { id: '', label: t('reasoningDefault') },
+                ...reasoningEfforts.map(effort => ({ id: effort, label: effort })),
+              ]}
+              selectedId={draft.reasoningEffort}
+              disabled={busy || draft.model === ''}
+              onSelect={(id) => { update('reasoningEffort', id) }}
+            />
+          )}
+        />
+      ) : null}
+
+      <SettingsRow
+        title={t('pasteToPath')}
+        description={t('pasteToPathHint')}
+        control={(
+          <SettingsSwitch
+            ariaLabel={t('pasteToPath')}
+            checked={draft.pasteToPath}
+            disabled={busy}
+            onChange={(next) => { update('pasteToPath', next) }}
+          />
+        )}
+      />
+
+      <AdvancedSettings t={t} draft={draft} busy={busy} update={update} />
+
+      <div className="dvt-actions">
         <Button variant="primary" disabled={!snapshot.writable || busy} onClick={save}>{state.action === 'save' ? t('saving') : t('save')}</Button>
         <Button variant="outline" disabled={busy || !snapshot.enabled} onClick={() => { void controller.testRead() }}>{state.action === 'test' ? t('testing') : t('testRead')}</Button>
         <Button variant="outline" disabled={busy} onClick={() => { void controller.load() }}>{t('reload')}</Button>
       </div>
 
-      <details className="dvt-advanced">
-        <summary><span><strong>{t('advanced')}</strong><small>{t('advancedHint')}</small></span><span className="dvt-details-chevron" aria-hidden="true">⌄</span></summary>
-        <div className="dvt-advanced-body">
-          <section className="dvt-panel"><div className="dvt-form-grid">
-            <Field label={t('language')}><select className="dvt-select" aria-label={t('language')} disabled={busy} value={draft.language} onChange={(event) => { update('language', event.target.value as 'zh' | 'en') }}><option value="zh">中文</option><option value="en">English</option></select></Field>
-            <Field label={t('timeout')}><Input aria-label={t('timeout')} inputMode="numeric" disabled={busy} value={draft.timeoutMs} onChange={(event) => { update('timeoutMs', event.target.value) }} /></Field>
-            <Field label={t('maxBytes')}><Input aria-label={t('maxBytes')} inputMode="numeric" disabled={busy} value={draft.maxImageBytes} onChange={(event) => { update('maxImageBytes', event.target.value) }} /></Field>
-            <Field label={t('maxPixels')}><Input aria-label={t('maxPixels')} inputMode="numeric" disabled={busy} value={draft.maxImagePixels} onChange={(event) => { update('maxImagePixels', event.target.value) }} /></Field>
-            <Field label={t('concurrency')}><Input aria-label={t('concurrency')} inputMode="numeric" disabled={busy} value={draft.concurrency} onChange={(event) => { update('concurrency', event.target.value) }} /></Field>
-            <Field label={t('maxImages')}><Input aria-label={t('maxImages')} inputMode="numeric" disabled={busy} value={draft.maxImages} onChange={(event) => { update('maxImages', event.target.value) }} /></Field>
-            <Field label={t('allowedDirs')} hint={t('allowedDirsHint')}><textarea aria-label={t('allowedDirs')} rows={3} disabled={busy} value={draft.allowedDirs} onChange={(event) => { update('allowedDirs', event.target.value) }} /></Field>
-          </div></section>
-        </div>
-      </details>
+      <div className="dvt-footnote">{`Vision Cloud · v${snapshot.pluginVersion}`}</div>
     </div>
   )
 }
 
+/** Numeric advanced fields, all held as strings in the draft. */
+const NUMERIC_FIELDS: ReadonlyArray<readonly [LocaleKey, 'timeoutMs' | 'maxImageBytes' | 'maxImagePixels' | 'concurrency' | 'maxImages']> = [
+  ['timeout', 'timeoutMs'],
+  ['maxBytes', 'maxImageBytes'],
+  ['maxPixels', 'maxImagePixels'],
+  ['concurrency', 'concurrency'],
+  ['maxImages', 'maxImages'],
+]
+
+/** Advanced group: a flat disclosure row over the remaining settings rows. */
+function AdvancedSettings({ t, draft, busy, update }: {
+  t: Translate
+  draft: Draft
+  busy: boolean
+  update: <K extends keyof Draft>(key: K, value: Draft[K]) => void
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <>
+      <div className="dvt-row">
+        <button
+          type="button"
+          className="dvt-disclosure"
+          aria-expanded={open}
+          onClick={() => { setOpen(value => !value) }}
+        >
+          <span className="dvt-row-text">
+            <span className="dvt-row-title">{t('advanced')}</span>
+            <span className="dvt-row-desc">{t('advancedHint')}</span>
+          </span>
+          <IconChevronDownOutline14
+            className="dvt-disclosure-chevron"
+            {...open ? { 'data-open': 'true' } : {}}
+          />
+        </button>
+      </div>
+      {!open ? null : (
+        <>
+          <SettingsRow
+            title={t('language')}
+            control={(
+              <SettingsMenu
+                ariaLabel={t('language')}
+                label={draft.language === 'en' ? 'English' : '中文'}
+                entries={[{ id: 'zh', label: '中文' }, { id: 'en', label: 'English' }]}
+                selectedId={draft.language}
+                disabled={busy}
+                onSelect={(id) => { update('language', id === 'en' ? 'en' : 'zh') }}
+              />
+            )}
+          />
+          {NUMERIC_FIELDS.map(([key, field]) => (
+            <SettingsRow
+              key={field}
+              title={t(key)}
+              control={(
+                <Input
+                  className="dvt-input"
+                  aria-label={t(key)}
+                  inputMode="numeric"
+                  disabled={busy}
+                  value={draft[field]}
+                  onChange={(event) => { update(field, event.target.value) }}
+                />
+              )}
+            />
+          ))}
+          <div className="dvt-row dvt-row-stacked">
+            <div className="dvt-row-text">
+              <div className="dvt-row-title">{t('allowedDirs')}</div>
+              <div className="dvt-row-desc">{t('allowedDirsHint')}</div>
+            </div>
+            <textarea
+              className="dvt-textarea"
+              aria-label={t('allowedDirs')}
+              rows={3}
+              disabled={busy}
+              value={draft.allowedDirs}
+              onChange={(event) => { update('allowedDirs', event.target.value) }}
+            />
+          </div>
+        </>
+      )}
+    </>
+  )
+}
+
 const CSS = `
-.dvt-settings{display:grid;gap:14px;max-width:900px;padding:8px 2px 32px;color:var(--dsw-alias-label-primary)}
-.dvt-settings-header{display:flex;justify-content:space-between;gap:20px;align-items:flex-start;padding:4px 2px 12px;margin-bottom:2px;border-bottom:1px solid var(--dsw-alias-border-l1)}.dvt-settings-header h2{font-size:20px;letter-spacing:-.02em;margin:3px 0 5px}.dvt-settings-header p{max-width:620px;margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5}.dvt-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dsw-alias-state-business-primary);font-weight:700}.dvt-release{display:grid;gap:4px;min-width:170px;padding:9px 11px;border-radius:10px;background:var(--dsw-alias-bg-layer-2);font-size:10px;color:var(--dsw-alias-label-secondary)}.dvt-release span{display:flex;justify-content:space-between;gap:12px;white-space:nowrap}.dvt-release strong{color:var(--dsw-alias-label-primary)}
-.dvt-select{width:100%;height:32px;box-sizing:border-box;padding:0 30px 0 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;appearance:none;-webkit-appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 9px center;cursor:pointer}.dvt-select:hover{border-color:var(--dsw-alias-border-l2)}.dvt-select:focus{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-1px}.dvt-select:disabled{opacity:.55;cursor:default}.dvt-select optgroup{font-weight:650;color:var(--dsw-alias-label-secondary)}
-.dvt-field textarea{width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;resize:vertical;min-height:60px}.dvt-field textarea:focus{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:-1px}.dvt-field textarea:disabled{opacity:.55}
-.dvt-check{display:grid;grid-template-columns:auto 1fr;align-items:center;column-gap:8px;row-gap:2px;cursor:pointer}.dvt-check input{width:14px;height:14px;margin:0;accent-color:var(--dsw-alias-state-business-primary);cursor:pointer}.dvt-check span{font-size:12px}.dvt-check small{grid-column:2;font-size:10px;color:var(--dsw-alias-label-caption);line-height:1.4}
-.dvt-alert{padding:10px 12px;border-radius:10px;font-size:12px;line-height:1.5}.dvt-alert.warning{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 12%,transparent);color:var(--dsw-alias-state-warn-label)}.dvt-alert.error{background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 10%,transparent);color:var(--dsw-alias-state-error-primary)}.dvt-alert.success{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent);color:var(--dsw-alias-state-success-primary)}
-.dvt-panel{display:grid;gap:12px;padding:15px;border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);box-shadow:var(--dsw-shadow-lv1)}.dvt-panel-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.dvt-panel-title h3{font-size:14px;margin:0}.dvt-panel-title p{font-size:11px;line-height:1.45;color:var(--dsw-alias-label-secondary);margin:4px 0 0;max-width:620px}.dvt-badge{font-size:10px;padding:3px 8px;border-radius:999px;white-space:nowrap}.dvt-badge.ok{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 14%,transparent);color:var(--dsw-alias-state-success-primary)}.dvt-badge.error{background:color-mix(in srgb,var(--dsw-alias-label-secondary) 14%,transparent);color:var(--dsw-alias-label-secondary)}
-.dvt-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.dvt-field{display:grid;gap:5px}.dvt-field>span{font-size:11px;color:var(--dsw-alias-label-secondary)}.dvt-field small{font-size:10px;color:var(--dsw-alias-label-caption);line-height:1.4}
-.dvt-save-row{display:flex;gap:8px;flex-wrap:wrap}.dvt-essential{border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 30%,var(--dsw-alias-border-l1));box-shadow:var(--dsw-shadow-lv1),0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-business-primary) 5%,transparent)}
-.dvt-advanced{border:1px solid var(--dsw-alias-border-l1);border-radius:14px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}.dvt-advanced>summary{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:14px 15px;cursor:pointer;list-style:none}.dvt-advanced>summary::-webkit-details-marker{display:none}.dvt-advanced>summary>span:first-child{display:grid;gap:3px}.dvt-advanced>summary strong{font-size:13px}.dvt-advanced>summary small{font-size:10px;line-height:1.45;color:var(--dsw-alias-label-secondary);font-weight:400}.dvt-details-chevron{font-size:15px;opacity:.55;transition:transform .16s ease}.dvt-advanced[open] .dvt-details-chevron{transform:rotate(180deg)}.dvt-advanced-body{display:grid;gap:12px;padding:0 12px 12px}.dvt-advanced-body>.dvt-panel{box-shadow:none}
-.dvt-loading{padding:24px;border-radius:12px;background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary)}
+.dvt-settings{display:flex;flex-direction:column;width:100%;max-width:760px;color:var(--dsw-alias-label-primary)}.dvt-settings>.dvt-row:last-of-type{border-bottom:none}
+.dvt-row{display:flex;align-items:center;gap:8px;padding:16px 0;border-bottom:1px solid var(--dsw-alias-border-l2)}.dvt-row-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px;padding-right:48px}.dvt-row-title{font-size:14px;font-weight:400;line-height:22px;color:var(--dsw-alias-label-primary)}.dvt-row-desc{font-size:12px;font-weight:400;line-height:18px;color:var(--dsw-alias-label-tertiary)}.dvt-row-control{flex:none;display:flex;align-items:center;min-width:0}
+.dvt-selector{display:inline-flex;align-items:center;gap:12px;max-width:280px;height:36px;padding:0 14px;border:none;border-radius:18px;background:var(--dsw-alias-bg-module-platform);font:inherit;font-size:14px;line-height:22px;color:var(--dsw-alias-label-primary);cursor:pointer}.dvt-selector:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.dvt-selector:disabled{cursor:default;color:var(--dsw-alias-label-dimmed)}.dvt-selector-label{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.dvt-selector-chevron{flex:none}
+.dvt-switch{display:inline-flex;align-items:center;height:36px;padding:0;border:none;background:none;cursor:pointer}.dvt-switch:disabled{cursor:default;opacity:.55}.dvt-switch-track{position:relative;display:inline-block;flex:none;width:28px;height:16px;border-radius:8px;background:var(--dsw-alias-border-l2);transition:background-color 120ms var(--ds-ease-in-out)}.dvt-switch-thumb{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-bg-layer-1);transition:transform 120ms var(--ds-ease-in-out)}.dvt-switch-track[data-on=true]{background:var(--dsw-alias-state-business-primary)}.dvt-switch-track[data-on=true] .dvt-switch-thumb{transform:translateX(12px)}
+.dvt-disclosure{display:flex;align-items:center;gap:8px;width:100%;padding:0;border:none;background:none;font:inherit;color:inherit;text-align:left;cursor:pointer}.dvt-disclosure-chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform 120ms var(--ds-ease-in-out)}.dvt-disclosure-chevron[data-open=true]{transform:rotate(180deg)}
+.dvt-input{width:180px}.dvt-row-stacked{flex-direction:column;align-items:stretch;gap:8px}.dvt-row-stacked .dvt-row-text{padding-right:0}.dvt-textarea{width:100%;box-sizing:border-box;padding:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:14px;line-height:22px;resize:vertical}.dvt-textarea:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}.dvt-textarea:disabled{opacity:.55}
+.dvt-actions{display:flex;flex-wrap:wrap;gap:8px;padding:16px 0}.dvt-footnote{padding-bottom:8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
+.dvt-alert{padding:12px 0;font-size:12px;line-height:18px;border-bottom:1px solid var(--dsw-alias-border-l2)}.dvt-alert.warning{color:var(--dsw-alias-state-warn-label)}.dvt-alert.error{color:var(--dsw-alias-state-error-primary)}.dvt-alert.success{color:var(--dsw-alias-state-success-primary)}
+.dvt-loading{padding:16px 0;font-size:14px;line-height:22px;color:var(--dsw-alias-label-tertiary)}
 .dvt-paste-dock{box-sizing:border-box;width:calc(100% - 32px);max-width:var(--dsh-composer-card-max-width,960px);margin:0 auto;display:flex;flex-wrap:wrap;gap:8px;padding:0 2px 6px}.dvt-paste-item{position:relative;width:64px;height:64px;border-radius:10px;overflow:visible}.dvt-paste-preview{position:relative;width:100%;height:100%;box-sizing:border-box;display:block;overflow:hidden;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);padding:0;cursor:zoom-in}.dvt-paste-preview:hover{border-color:var(--dsw-alias-border-l2)}.dvt-paste-preview:disabled{cursor:default;opacity:.8}.dvt-paste-preview[data-status=copying]{border-color:var(--dsw-alias-state-business-primary)}.dvt-paste-preview[data-status=error]{border-color:var(--dsw-alias-state-error-primary)}.dvt-paste-preview-img{display:block;width:100%;height:100%;object-fit:cover}.dvt-paste-preview[data-status=copying] .dvt-paste-preview-img{opacity:.5}.dvt-paste-img-text{display:grid;place-items:center;height:100%;color:var(--dsw-alias-label-caption);font-size:11px;padding:0 6px;overflow:hidden}.dvt-paste-status{position:absolute;left:0;right:0;bottom:0;padding:2px 4px;background:linear-gradient(180deg,transparent,rgba(0,0,0,.62));color:#fff;font-size:10px;text-align:center;pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dvt-paste-status[data-kind=error]{background:var(--dsw-alias-state-error-primary);text-align:center;padding:1px 4px}.dvt-paste-remove{position:absolute;top:-7px;right:-7px;width:20px;height:20px;display:grid;place-items:center;border:1px solid var(--dsw-alias-border-l1);border-radius:50%;padding:0;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-caption);font:inherit;font-size:14px;line-height:1;cursor:pointer;opacity:0}.dvt-paste-item:hover .dvt-paste-remove,.dvt-paste-remove:focus-visible{opacity:1}.dvt-paste-remove:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}.dvt-paste-remove:disabled{opacity:0;cursor:default}
 .dvt-user-row{flex-direction:column;align-items:flex-end;gap:6px;display:flex}.dvt-user-row[data-pending-steering=true]{opacity:.55}.dvt-user-stack{flex-direction:column;align-items:flex-end;gap:8px;min-width:0;max-width:min(525px,82%);display:flex}.dvt-bubble{background:var(--dsw-specific-bubble);max-width:100%;color:var(--dsw-alias-label-primary);border-radius:22px;padding:10px 16px;font-size:16px;line-height:24px;white-space:pre-wrap;overflow-wrap:anywhere}.dvt-ref-chip{color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-interactive-bg-hover);border-radius:6px;padding:0 4px;margin:0 1px;display:inline}.dvt-img-gallery{flex-direction:column;align-items:flex-end;gap:8px;max-width:100%;display:flex}.dvt-img-frame{position:relative;overflow:hidden;border:0;padding:0;background:var(--dsw-alias-interactive-bg-hover);border-radius:14px;cursor:zoom-in;display:grid;place-items:center;max-width:100%}.dvt-img-frame img{display:block;width:100%;height:100%;object-fit:cover}.dvt-img-frame[data-variant=tile]{width:64px;height:64px}.dvt-img-frame:not([data-variant]){min-width:64px;min-height:64px}.dvt-img-text{color:var(--dsw-alias-label-caption);font-size:12px;padding:6px 10px}.dvt-img-error{color:var(--dsw-alias-state-error-primary)}.dvt-msg-actions{align-items:center;gap:10px;height:28px;display:flex}.dvt-msg-time{color:var(--dsw-alias-label-tertiary);white-space:nowrap;padding-right:12px;font-size:14px;line-height:24px}@media (hover:hover){[data-time-hover-root] .dvt-msg-time{opacity:0;transition:opacity 80ms}[data-time-hover-root]:hover .dvt-msg-time,[data-time-hover-root]:focus-within .dvt-msg-time{opacity:1}}.dvt-msg-action{width:28px;height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;border-radius:28px;justify-content:center;align-items:center;padding:6px;display:inline-flex;flex:none}.dvt-msg-action:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}.dvt-lightbox{position:fixed;inset:0;z-index:99999;display:grid;place-items:center}.dvt-lightbox-mask{position:absolute;inset:0;background:rgba(0,0,0,.7);cursor:zoom-out}.dvt-lightbox-img{position:relative;max-width:90vw;max-height:90vh;border-radius:8px;box-shadow:0 12px 48px rgba(0,0,0,.5)}.dvt-lightbox-close{position:absolute;top:16px;right:16px;width:36px;height:36px;display:grid;place-items:center;border-radius:50%;border:0;background:rgba(255,255,255,.12);color:#fff;cursor:pointer}.dvt-lightbox-close:hover{background:rgba(255,255,255,.22)}
-@media(max-width:720px){.dvt-settings-header{display:grid}.dvt-form-grid{grid-template-columns:1fr}.dvt-panel-title{flex-direction:column}}
+@media(max-width:720px){.dvt-row{align-items:flex-start;flex-direction:column;gap:12px}.dvt-row-text{padding-right:0}.dvt-selector{max-width:100%}.dvt-input{width:100%}.dvt-disclosure{flex-direction:row;align-items:center}}
 `
 
 function installStyles(): () => void {
