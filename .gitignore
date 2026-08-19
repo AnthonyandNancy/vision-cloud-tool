@@ -4,3 +4,4 @@ node_modules/
 .DS_Store
 .dsh-vision-toolkit/
 .dsh-vision-cloud/
+.pnpm-store/
