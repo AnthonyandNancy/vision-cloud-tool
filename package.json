@@ -53,6 +53,7 @@
     "build": "node scripts/clean-build.mjs && tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsc -p tsconfig.client.public.json && node scripts/build-client.mjs",
     "prepack": "npm run build",
     "test": "vitest run tests",
+    "test:compat": "vitest run tests/compatibility-contract.spec.ts tests/model-capability.spec.ts tests/file-references.spec.ts tests/user-message-reference-regression.spec.ts",
     "verify:portable": "node scripts/verify-portable.mjs"
   },
   "dsh": {
