@@ -2,6 +2,16 @@
 
 All notable user-facing changes to DSH Vision Cloud are documented in this file. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic version tags.
 
+## [0.1.10] - 2026-08-20
+
+### Added
+
+- Added feature-detected DSH rc6/rc7/rc8 compatibility contracts, conservative `@file` reference routing, and a safe shadow renderer for extensible content blocks.
+
+### Changed
+
+- Native image input is selected only when the resolved model declares `inputModalities` containing `image`; unknown capability stays on the text-safe bridge path.
+
 ## [Unreleased]
 
 ### Added
