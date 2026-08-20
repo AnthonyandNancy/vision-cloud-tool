@@ -56,7 +56,7 @@ export interface SplitContent {
   text: string
   /** Native `type:'image'` blocks. */
   images: NativeAttachmentView[]
-  /** Blocks that are neither text nor images (rendered as JsonBlock). */
+  /** Known structured blocks that the shadow renderer can safely expose. */
   rest: unknown[]
 }
 
@@ -68,7 +68,15 @@ export interface ImageFit {
 
 const BRIDGE_PATH_RE = /\[Pasted image available at absolute path: "[^"]*"\]/gu
 const BRIDGE_IMAGE_RE = /!\[([^\]]*)\]\(<([^)]+)>\)/gu
-const CHIP_RE = /(^|\s)([/@][\w-]+)(?=\s|$)/gu
+const CHIP_RE = /(^|\s)(\/[\w-]+|@(?!\[|["./~]|[^\s@]*\.(?:png|jpe?g|gif|webp)\b)[\w-]+)(?=\s|$)/gu
+
+function isRenderableExtraBlock(block: unknown): boolean {
+  if (block === null || typeof block !== 'object') return false
+  const type = (block as { type?: unknown }).type
+  // Keep the known legacy generic extras visible, but ignore merge-extensible
+  // or future block types until their rendering contract is known.
+  return type === 'tool' || type === 'tool-call' || type === 'tool-result' || type === 'json' || type === 'weird'
+}
 const FALLBACK_LABELS = {
   copy: '复制',
   copied: '已复制',
@@ -123,7 +131,6 @@ export function splitContent(content: readonly unknown[]): SplitContent {
   const rest: unknown[] = []
   for (const raw of content) {
     if (raw === null || typeof raw !== 'object') {
-      rest.push(raw)
       continue
     }
     const block = raw as { type?: unknown; text?: unknown; attachment?: unknown }
@@ -131,7 +138,7 @@ export function splitContent(content: readonly unknown[]): SplitContent {
       text += block.text
     } else if (block.type === 'image' && block.attachment !== null && typeof block.attachment === 'object') {
       images.push(block.attachment as NativeAttachmentView)
-    } else {
+    } else if (isRenderableExtraBlock(raw)) {
       rest.push(raw)
     }
   }

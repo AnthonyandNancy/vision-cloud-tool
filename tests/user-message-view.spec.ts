@@ -66,11 +66,11 @@ describe('content splitting', () => {
     expect(result.rest).toEqual([restBlock])
   })
 
-  it('treats null and malformed blocks as extras', () => {
+  it('ignores null and malformed blocks instead of rendering them as JsonBlock extras', () => {
     const result = splitContent([null, 42, { type: 'image', attachment: null }])
     expect(result.text).toBe('')
     expect(result.images).toEqual([])
-    expect(result.rest).toHaveLength(3)
+    expect(result.rest).toEqual([])
   })
 })
 
