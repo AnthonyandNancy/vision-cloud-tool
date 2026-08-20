@@ -4,8 +4,21 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveConfig } from '../src/config.ts'
 import { VisionToolkitRuntime } from '../src/runtime.ts'
+import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 
 let workspace: string
+
+const TINY_PNG = Uint8Array.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+  0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41,
+  0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+  0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xdd, 0x8d,
+  0xb0, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44,
+  0xae, 0x42, 0x60, 0x82,
+])
 
 beforeEach(async () => {
   workspace = await mkdtemp(join(tmpdir(), 'vision-cloud-url-guard-'))
@@ -17,7 +30,24 @@ afterEach(async () => {
 })
 
 function runtime(allowExtensionlessImageUrls = false): VisionToolkitRuntime {
-  return new VisionToolkitRuntime({} as never, resolveConfig({
+  const attachment = {
+    saveImage: vi.fn(async (input: { data: Uint8Array; mediaType: string; name: string }) => ({
+      attachmentId: `sha256:test-${input.name}`,
+      mediaType: input.mediaType,
+      bytes: input.data.byteLength,
+      width: 1,
+      height: 1,
+      name: input.name,
+    } as ImageAttachmentRef)),
+    readImage: vi.fn(),
+  }
+  const llm = {
+    stream: vi.fn(async function* () {
+      yield { type: 'text-delta', text: '{"summary":"ok","ocr":{"full_text":"","lines":[]},"layout":{"regions":[]},"semantics":{"scene":"","entities":[],"relations":[]},"visual":{"dominant_colors":[],"style":"","notes":[]},"uncertainty":[]}' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }),
+  }
+  return new VisionToolkitRuntime({ attachments: attachment, llm, logger: { info: vi.fn() } } as never, resolveConfig({
     model: { provider: 'test-provider', model: 'test-vision' },
     allowExtensionlessImageUrls,
   }))
@@ -28,6 +58,34 @@ function options(): { signal: AbortSignal; workspace: string } {
 }
 
 describe('vision_cloud_tool URL media guard', () => {
+  it('accepts @-prefixed and quoted local image references', async () => {
+    await writeFile(join(workspace, 'error screenshot.png'), TINY_PNG)
+
+    const result = await runtime().read(
+      { images: ['@"error screenshot.png"'], attachments: [] },
+      undefined,
+      options(),
+    )
+
+    expect(result.images).toMatchObject([{ format: 'png', width: 1, height: 1 }])
+  })
+
+  it('rejects a DSH session reference before filesystem resolution', async () => {
+    await expect(runtime().read(
+      { images: ['@[session](dsh-session:abc)'], attachments: [] },
+      undefined,
+      options(),
+    )).rejects.toMatchObject({ code: 'input' })
+  })
+
+  it('rejects an unclassified @ reference before filesystem resolution', async () => {
+    await expect(runtime().read(
+      { images: ['@agent'], attachments: [] },
+      undefined,
+      options(),
+    )).rejects.toMatchObject({ code: 'input' })
+  })
+
   it('rejects a non-image URL extension before any network request', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

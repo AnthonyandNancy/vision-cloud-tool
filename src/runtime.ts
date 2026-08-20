@@ -16,6 +16,7 @@ import type { ResolvedVisionToolkitConfig } from './config.ts'
 import { VisionToolkitError } from './errors.ts'
 import { readImageHeader, sniffFormat, type ImageFormat } from './image-header.ts'
 import { createPathPolicy, resolveInputFile, SUPPORTED_IMAGE_EXTENSIONS, type PathPolicy } from './paths.ts'
+import { normalizeDshFileReference } from './file-references.ts'
 import { missingSchemaFields, normalizeVisionResult, type VisionResult } from './vision-schema.ts'
 import { buildVisionPrompt } from './vision-prompt.ts'
 
@@ -313,13 +314,21 @@ async function resolveImageBytes(
   signal: AbortSignal,
   allowExtensionlessImageUrls: boolean,
 ): Promise<ResolvedImageBytes> {
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
-    if (!/^https?:\/\//i.test(raw)) {
+  const reference = normalizeDshFileReference(raw)
+  if (reference.kind === 'session') {
+    throw new VisionToolkitError('input', `DSH session reference is not an image file: ${raw}`)
+  }
+  if (reference.kind === 'plain') {
+    throw new VisionToolkitError('input', `unclassified DSH reference is not an image file: ${raw}`)
+  }
+  const input = reference.value
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(input)) {
+    if (!/^https?:\/\//i.test(input)) {
       throw new VisionToolkitError('input', `only http(s) image URLs are supported: ${raw}`)
     }
-    return fetchUrlBytes(raw, signal, allowExtensionlessImageUrls)
+    return fetchUrlBytes(input, signal, allowExtensionlessImageUrls)
   }
-  const resolved = await resolveInputFile(raw, policy)
+  const resolved = await resolveInputFile(input, policy)
   const data = await readFile(resolved.path)
   return { data: new Uint8Array(data), source: resolved.path, name: basename(resolved.path) }
 }
