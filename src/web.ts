@@ -18,6 +18,7 @@ import {
 } from './config.ts'
 import type { VisionToolkitRuntime } from './runtime.ts'
 import { PLUGIN_VERSION } from './version.ts'
+import { resolveModelCapability } from './model-capability.ts'
 import { sameOriginPost } from './web-request.ts'
 
 /** Exact route used by the browser Settings page. */
@@ -156,9 +157,14 @@ export class VisionToolkitWebBackend {
           let reasoningEfforts: string[] = []
           let inputModalities = [...(model.inputModalities ?? [])]
           try {
-            const resolved = await this.ctx.llm.resolveModelInfo(info.id, model.id)
-            reasoningEfforts = (resolved.reasoning?.efforts ?? []).map(effort => String(effort.id))
-            if (Array.isArray(resolved.inputModalities)) inputModalities = [...resolved.inputModalities]
+            const resolved = typeof this.ctx.llm.resolveModelInfo === 'function'
+              ? await this.ctx.llm.resolveModelInfo(info.id, model.id)
+              : undefined
+            reasoningEfforts = ((resolved as { reasoning?: { efforts?: readonly { id?: unknown }[] } } | undefined)?.reasoning?.efforts ?? [])
+              .map(effort => String(effort.id))
+            if (Array.isArray((resolved as { inputModalities?: unknown } | undefined)?.inputModalities)) {
+              inputModalities = [...(resolved as { inputModalities: readonly typeof inputModalities[number][] }).inputModalities]
+            }
           } catch {
             reasoningEfforts = []
           }
@@ -179,13 +185,11 @@ export class VisionToolkitWebBackend {
 
   /** Reject a selected model that cannot receive image input before saving. */
   private async assertVisionCapableModel(provider: string, model: string): Promise<void> {
-    let modalities: readonly string[] | undefined
-    try {
-      modalities = (await this.ctx.llm.resolveModelInfo(provider, model)).inputModalities
-    } catch (error) {
-      throw new Error(`vision model "${model}" could not be resolved: ${publicMessage(error)}`)
+    const capability = await resolveModelCapability(this.ctx.llm, provider, model)
+    if (capability === 'unknown') {
+      throw new Error(`vision model "${model}" capability could not be determined; select a model that declares image input`)
     }
-    if (!Array.isArray(modalities) || !modalities.includes('image')) {
+    if (capability !== 'image') {
       throw new Error(`model "${model}" does not declare image input; select a vision-capable model`)
     }
   }
