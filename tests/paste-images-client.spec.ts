@@ -200,7 +200,10 @@ async function armTakeover(): Promise<void> {
 }
 
 /** Drain pending microtasks so held paste settlements can run to completion. */
-async function flushTasks(times = 8): Promise<void> {
+async function flushTasks(times = 100): Promise<void> {
+  // Fetch/Response.json continuations can add several promise jobs before the
+  // held paste settles; drain enough microtasks without depending on timers so
+  // fake-timer tests remain deterministic.
   for (let count = 0; count < times; count += 1) await Promise.resolve()
 }
 
