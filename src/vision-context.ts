@@ -7,6 +7,7 @@
  */
 
 import type { Session } from '@deepseek-ai/dsh-session'
+import { normalizeDshFileReference } from './file-references.ts'
 
 /** One native image attachment found in the session history. */
 export interface NativeImageInput {
@@ -39,6 +40,9 @@ export const PASTE_PATH_MARKER_PATTERN = /\[Pasted image available at absolute p
 /** Direct image URL shapes accepted by vision_cloud_tool. */
 export const IMAGE_URL_PATTERN = /\b(https?:\/\/[^\s"'<>()[\]{}]+?\.(?:png|jpe?g|gif|webp)(?:[?#][^\s"'<>()[\]{}]*)?)/giu
 
+/** Explicit DSH image-file references, with quoted names allowed to contain spaces. */
+export const DSH_IMAGE_FILE_REFERENCE_PATTERN = /(?:^|\s)(@(?:"[^"]+"|[^\s@(){}<>:!?]+))/gu
+
 /** How the current conversation model can consume image inputs. */
 export type ConversationVisionCapability = 'image' | 'text' | 'unknown'
 
@@ -60,6 +64,12 @@ function collectTextInputs(text: string, inputs: VisionImageInputs): void {
   for (const match of text.matchAll(PASTE_PATH_MARKER_PATTERN)) {
     const path = unescapeJsonString(match[1] ?? '').trim()
     if (path !== '' && !inputs.paths.includes(path)) inputs.paths.push(path)
+  }
+  for (const match of text.matchAll(DSH_IMAGE_FILE_REFERENCE_PATTERN)) {
+    const raw = (match[1] ?? '').replace(/[.,;:!?]+$/u, '')
+    const reference = normalizeDshFileReference(raw)
+    if (reference.kind !== 'file' || !/\.(?:png|jpe?g|gif|webp)$/iu.test(reference.value)) continue
+    if (!inputs.paths.includes(reference.value)) inputs.paths.push(reference.value)
   }
   for (const match of text.matchAll(IMAGE_URL_PATTERN)) {
     const url = (match[0] ?? '').replace(/[.,;:!?]+$/u, '')
