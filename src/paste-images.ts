@@ -7,6 +7,7 @@ import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'nod
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-session'
 import { sameOriginPost } from './web-request.ts'
+import { resolveModelCapability } from './model-capability.ts'
 
 /** Exact route used by the browser paste integration. */
 export const PASTE_IMAGES_ROUTE = '/_dsh/vision-cloud/paste-images'
@@ -407,35 +408,8 @@ export class PastedImageBackend {
    * resolution failure) falls back to the paste-to-path bridge.
    */
   private async takeoverForExact(provider: string, model: string): Promise<boolean> {
-    const llm = this.ctx.llm
-    try {
-      if (typeof llm.resolveModelInfo === 'function') {
-        const resolved = await llm.resolveModelInfo(provider, model) as {
-          inputModalities?: readonly string[]
-        }
-        if (Array.isArray(resolved?.inputModalities) && resolved.inputModalities.includes('image')) return false
-        return true
-      }
-    } catch {
-      // Fall through to the catalog scan, then to a safe takeover default.
-    }
-
-    try {
-      const models = await llm.listModels(provider) as Array<{
-        id?: string
-        name?: string
-        inputModalities?: readonly string[]
-      }>
-      for (const entry of models) {
-        if (entry?.id !== model && entry?.name !== model) continue
-        if (Array.isArray(entry?.inputModalities) && entry.inputModalities.includes('image')) return false
-        return true
-      }
-    } catch {
-      // Ignore catalog failures; the exact-model lookup above is authoritative.
-    }
-
-    return true
+    const capability = await resolveModelCapability(this.ctx.llm, provider, model)
+    return capability !== 'image'
   }
 
   /**

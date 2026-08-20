@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-session'
 import { VISION_IMAGE_CONTEXT_NAME, VISION_TOOL_NAME, VISION_TOOL_SECTION_NAME, visionToolSectionText } from './system-prompt.ts'
+import { resolveModelCapability } from './model-capability.ts'
 import {
   collectImageInputs,
   EMPTY_VISION_IMAGE_INPUTS,
@@ -59,14 +60,7 @@ async function resolveCapability(
 ): Promise<ConversationVisionCapability> {
   const selected = conversationModel(assembled)
   if (selected === undefined) return 'unknown'
-  try {
-    const info = await ctx.llm.resolveModelInfo(selected.provider, selected.model, signal)
-    const modalities = info.inputModalities ?? []
-    if (modalities.length === 0) return 'unknown'
-    return modalities.includes('image') ? 'image' : 'text'
-  } catch {
-    return 'unknown'
-  }
+  return resolveModelCapability(ctx.llm, selected.provider, selected.model, signal)
 }
 
 /** Inputs the model still needs the tool for: an image-capable model skips native blocks it can see. */
