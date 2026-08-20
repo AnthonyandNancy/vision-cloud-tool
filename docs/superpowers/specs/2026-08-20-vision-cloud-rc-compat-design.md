@@ -157,7 +157,7 @@ The only positive native-image condition is:
 Array.isArray(inputModalities) && inputModalities.includes('image')
 ```
 
-An explicitly present modalities array without `image` is `text`. A missing or unusable capability declaration is `unknown`.
+A non-empty modalities array without `image` is `text`. A missing, empty, or unusable capability declaration is `unknown`; the routing policy for `unknown` is still the text-safe bridge.
 
 Consumers use the result as follows:
 
