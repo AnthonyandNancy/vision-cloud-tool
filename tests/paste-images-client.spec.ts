@@ -293,6 +293,16 @@ async function flushTasks(times = 100): Promise<void> {
   for (let count = 0; count < times; count += 1) await Promise.resolve()
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
     if (init?.method === 'POST') {
@@ -1343,6 +1353,187 @@ it('reconciles native draft images into bridge refs after switching to a text-on
     bench.dispose()
   })
 
+  it('promotes a live bridge draft to one native image immediately after switching to an image model', async () => {
+    let current = { provider: 'p', model: 'text-model' }
+    const listeners = new Set<() => void>()
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current }),
+        subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      },
+    }
+    let createCount = 0
+    const draftFace = {
+      createDraftImages: vi.fn((files: readonly File[]) => files.map(file => ({
+        id: createCount++ === 0 ? 'display-preview' : 'native-promoted',
+        file,
+        previewUrl: 'blob:preview',
+      }))),
+      releaseDraftImage: vi.fn(),
+      releaseDraftImages: vi.fn(),
+    }
+    const bench = fakeClient('保留这段文字', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+      conversation: draftFace,
+    })
+    composer()
+    vi.stubGlobal('fetch', vi.fn(async (url: unknown) => {
+      const params = new URL(String(url), 'http://localhost').searchParams
+      return new Response(JSON.stringify({ takeover: params.get('model') !== 'image-model' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+
+    await armTakeover()
+    const textarea = document.querySelector<HTMLTextAreaElement>('[data-composer-card] textarea')
+    if (textarea === null) throw new Error('composer textarea missing')
+    textarea.dispatchEvent(clipboardEvent('', [file('promote.png', 'image/png', [1, 2, 3])]))
+    await flushTasks()
+    const bridgedSnapshot = bench.input.state.getSnapshot()
+    expect(bridgedSnapshot.occurrences).toHaveLength(1)
+    expect(bridgedSnapshot.imageIds).toEqual(['display-preview'])
+    const bridgedDraftRev = bridgedSnapshot.draftRev
+
+    current = { provider: 'p', model: 'image-model' }
+    for (const listener of listeners) listener()
+    await flushTasks()
+
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.imageIds).toEqual(['native-promoted'])
+    expect(snapshot.occurrences).toEqual([])
+    expect(snapshot.draftRev).toBe(bridgedDraftRev + 1)
+    expect(snapshot.draft).toBe('保留这段文字')
+    expect(draftFace.releaseDraftImage).toHaveBeenCalledWith('display-preview')
+    bench.dispose()
+  })
+
+  it('does not duplicate a bridge draft when selection changes while its copy is in flight', async () => {
+    let current = { provider: 'p', model: 'text-model' }
+    const listeners = new Set<() => void>()
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current }),
+        subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      },
+    }
+    const post = deferred<Response>()
+    let createCount = 0
+    const draftFace = {
+      createDraftImages: vi.fn((files: readonly File[]) => files.map(file => ({
+        id: createCount++ === 0 ? 'display-preview' : 'native-promoted',
+        file,
+        previewUrl: 'blob:preview',
+      }))),
+      releaseDraftImage: vi.fn(),
+      releaseDraftImages: vi.fn(),
+    }
+    const bench = fakeClient('保留复制中的文字', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+      conversation: draftFace,
+    })
+    composer()
+    const fetchMock = vi.fn((url: unknown, init?: RequestInit) => {
+      if (init?.method === 'POST') return post.promise
+      return Promise.resolve(new Response(JSON.stringify({ takeover: new URL(String(url), 'http://localhost').searchParams.get('model') !== 'image-model' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await armTakeover()
+    const textarea = document.querySelector<HTMLTextAreaElement>('[data-composer-card] textarea')
+    if (textarea === null) throw new Error('composer textarea missing')
+    textarea.dispatchEvent(clipboardEvent('', [file('in-flight.png', 'image/png', [1, 2, 3])]))
+    await flushTasks()
+    const occurrence = bench.input.state.getSnapshot().occurrences[0]
+    if (occurrence === undefined) throw new Error('bridge occurrence missing')
+    const bridgedDraftRev = bench.input.state.getSnapshot().draftRev
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const serialization = codec.serialize(occurrence.ref, new AbortController().signal)
+    await flushTasks()
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(true)
+
+    current = { provider: 'p', model: 'image-model' }
+    for (const listener of listeners) listener()
+    await flushTasks()
+
+    let snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.imageIds).toEqual(['native-promoted'])
+    expect(snapshot.occurrences).toEqual([])
+    expect(snapshot.draftRev).toBe(bridgedDraftRev + 1)
+    expect(snapshot.draft).toBe('保留复制中的文字')
+    expect(draftFace.releaseDraftImage).toHaveBeenCalledWith('display-preview')
+
+    post.resolve(new Response(JSON.stringify({
+      ok: true,
+      value: { absolutePath: '/workspace/.dsh-vision-cloud/tmp/pasted-images/a/in-flight.png' },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await expect(serialization).resolves.toContain('in-flight.png')
+    await flushTasks()
+
+    snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.imageIds).toEqual(['native-promoted'])
+    expect(snapshot.occurrences).toEqual([])
+    expect(snapshot.draft).toBe('保留复制中的文字')
+    bench.dispose()
+  })
+
+  it('runs the final text migration after a delayed image verdict instead of returning the old reconciliation', async () => {
+    let current = { provider: 'p', model: 'text-model' }
+    const listeners = new Set<() => void>()
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current }),
+        subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      },
+    }
+    const native = file('race.png', 'image/png', [1, 2, 3])
+    const draftFace = {
+      draftImages: vi.fn(() => [{ id: 'native-race', file: native, previewUrl: 'blob:native' }]),
+      releaseDraftImages: vi.fn(),
+    }
+    const imageVerdict = deferred<Response>()
+    const finalTextVerdict = deferred<Response>()
+    const fetchMock = vi.fn((url: unknown) => {
+      const model = new URL(String(url), 'http://localhost').searchParams.get('model')
+      if (model === 'image-model') return imageVerdict.promise
+      if (model === 'final-text-model') return finalTextVerdict.promise
+      return Promise.resolve(new Response(JSON.stringify({ takeover: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    })
+    const bench = fakeClient('不要覆盖', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+      conversation: draftFace,
+    })
+    composer()
+    vi.stubGlobal('fetch', fetchMock)
+    await armTakeover()
+    bench.input.addImages(['native-race'])
+
+    current = { provider: 'p', model: 'image-model' }
+    for (const listener of listeners) listener()
+    current = { provider: 'p', model: 'final-text-model' }
+    for (const listener of listeners) listener()
+
+    imageVerdict.resolve(new Response(JSON.stringify({ takeover: false }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await flushTasks()
+    expect(bench.input.state.getSnapshot().imageIds).toEqual(['native-race'])
+    expect(fetchMock.mock.calls.some(([url]) => new URL(String(url), 'http://localhost').searchParams.get('model') === 'final-text-model')).toBe(true)
+
+    finalTextVerdict.resolve(new Response(JSON.stringify({ takeover: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await flushTasks()
+
+    expect(bench.input.state.getSnapshot().imageIds).toEqual([])
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+    expect(bench.input.state.getSnapshot().draft).toContain('不要覆盖')
+    bench.dispose()
+  })
+
   it('cleans leaked bridge markup from the draft when switching native images to bridge refs', async () => {
     let current: { provider: string; model: string } = { provider: 'abrdns', model: 'Qwen3.8-Max' }
     const listeners = new Set<() => void>()
@@ -1398,37 +1589,36 @@ it('reconciles native draft images into bridge refs after switching to a text-on
     bench.dispose()
   })
 
-  it('keeps native draft images when the fresh model verdict is unknown', async () => {
-    let current: { provider: string; model: string } = { provider: 'abrdns', model: 'Qwen3.8-Max' }
+  it('routes a native draft through the bridge when the capability verdict is unknown', async () => {
     const listeners = new Set<() => void>()
     const directory = {
       store: {
-        getSnapshot: () => ({ current }),
-        subscribe: (listener: () => void) => {
-          listeners.add(listener)
-          return () => { listeners.delete(listener) }
-        },
+        getSnapshot: () => ({ current: { provider: 'p', model: 'unknown-model' } }),
+        subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
       },
     }
-    const draftFace = { draftImages: vi.fn(), releaseDraftImages: vi.fn() }
-    const bench = fakeClient('不要丢图', ['slash'], false, {
+    const native = file('unknown.png', 'image/png', [1, 2, 3])
+    const draftFace = {
+      draftImages: vi.fn(() => [{ id: 'unknown-native', file: native, previewUrl: 'blob:native' }]),
+      releaseDraftImages: vi.fn(),
+    }
+    const bench = fakeClient('未知模型也要安全', ['slash'], false, {
       modelDirectories: { directoryFor: vi.fn(() => directory) },
       conversation: draftFace,
     })
     composer()
-    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('bridge down') }))
-
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('capability unavailable') }))
     await armTakeover()
-    bench.input.addImages(['draft-native'])
-    current = { provider: 'abrdns', model: 'DeepSeek-V4-Pro-0813' }
+    bench.input.addImages(['unknown-native'])
     for (const listener of listeners) listener()
     await flushTasks()
 
-    expect(bench.input.state.getSnapshot().imageIds).toEqual(['draft-native'])
-    expect(bench.input.state.getSnapshot().occurrences).toEqual([])
+    expect(bench.input.state.getSnapshot().imageIds).toEqual([])
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+    expect(draftFace.releaseDraftImages).toHaveBeenCalledTimes(1)
     expect(bench.input.notify).toHaveBeenCalledWith(
       'error',
-      'The image bridge is temporarily unreachable; native draft images were left unchanged.',
+      expect.stringContaining('text-safe fallback'),
     )
     bench.dispose()
   })
