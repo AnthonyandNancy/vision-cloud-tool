@@ -2,6 +2,13 @@
 
 All notable user-facing changes to DSH Vision Cloud are documented in this file. The project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and uses semantic version tags.
 
+## [0.1.11] - 2026-08-21
+
+### Fixed
+
+- Pasted and dropped images no longer leak their `@name` reference text into the composer draft, and the reference survives subsequent typing. Newer DSH builds insert an inline `@label` display text rather than a single placeholder glyph, and they discard any reference range an edit overlaps, so the plugin now reads each occurrence's real span from the host instead of assuming a one-character width. Without this the reference was destroyed on insertion, which also dropped the submit-time serialization and sent a text-only model the literal `@image.png` instead of a bridged workspace path.
+- Native image attachments appear again in sent user messages on multimodal models. Newer DSH builds own historical image presentation in the `conversation.message.images` slot and no longer hand chat-node renderers an image loader, so the shadow renderer delegates native blocks to that entry instead of degrading them to a bare filename.
+
 ## [0.1.10] - 2026-08-20
 
 ### Added

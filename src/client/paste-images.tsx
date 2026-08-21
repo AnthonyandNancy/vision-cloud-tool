@@ -42,6 +42,12 @@ interface PasteOccurrence {
   source: string
   ref: string
   offset: number
+  /**
+   * Inline display span of the reference. Older builds mint a single
+   * placeholder glyph; rc8 mints the full `@label` display text and reports
+   * its length here.
+   */
+  length?: number | undefined
   label: string
 }
 
@@ -256,6 +262,15 @@ async function responseJson(response: Response): Promise<PasteResponse> {
 
 function pasteLabel(file: File, index: number, saved?: string | undefined): string {
   return saved?.trim() || file.name.trim() || `clipboard-image-${index + 1}`
+}
+
+/**
+ * Read the occurrence table as this plugin's structural view. The host type
+ * gained the inline display `length` after the dependency floor, so the field
+ * is read structurally and treated as optional.
+ */
+function occurrencesOf(snapshot: { occurrences: readonly unknown[] }): readonly PasteOccurrence[] {
+  return snapshot.occurrences as readonly PasteOccurrence[]
 }
 
 /** Owns browser File objects until DSH serializes the corresponding text references. */
@@ -640,13 +655,28 @@ export class PasteImageController {
           source: SOURCE,
           ref: record.ref,
           label,
+          // Decorates the chip with the file glyph on builds that support
+          // reference appearances; older builds ignore the extra field.
+          appearance: 'file',
           clipboardText: `[pasted image: ${label}]`,
-        }, { start: cursor, end: cursor, draftRev: snapshot.draftRev })
+        } as Parameters<typeof input.insertReference>[0], { start: cursor, end: cursor, draftRev: snapshot.draftRev })
         if (!accepted) throw new Error('The composer changed before pasted images could be inserted')
-        cursor += 1
+        // The host owns the inline display span: older builds mint one
+        // placeholder glyph, rc8 mints the whole `@label` text. Advancing by a
+        // hardcoded 1 would put the separator below INSIDE the reference range,
+        // and a host that drops any occurrence an edit intersects would discard
+        // the occurrence — losing both the chip and the submit-time serialization.
+        const minted = occurrencesOf(input.state.getSnapshot())
+          .find(row => row.source === SOURCE && row.ref === record.ref)
+        cursor += minted?.length ?? 1
         const hasNext = index + 1 < records.length
         const suffix = input.state.getSnapshot().draft.slice(cursor)
-        if (hasNext || (suffix !== '' && !/^\s/u.test(suffix))) cursor = this.insertText(input, ' ', cursor)
+        // rc8 already appends its own separating gap; only add one when the
+        // reference is not followed by whitespace already.
+        if (hasNext || suffix !== '') {
+          if (!/^\s/u.test(suffix)) cursor = this.insertText(input, ' ', cursor)
+          else cursor += 1
+        }
       }
       this.changed()
       return cursor
@@ -1379,7 +1409,7 @@ export class PasteImageController {
     const input = this.inputFor(sessionId)
     const snapshot = input.state.getSnapshot()
     if (snapshot.phase !== 'plain') return
-    const current = snapshot.occurrences.find(candidate =>
+    const current = occurrencesOf(snapshot).find(candidate =>
       candidate.source === SOURCE
       && candidate.occurrenceId === occurrence.occurrenceId
       && candidate.ref === occurrence.ref)
@@ -1388,7 +1418,7 @@ export class PasteImageController {
       insertText: (text: string, span: { start: number; end: number; draftRev: number }) => boolean
     }).insertText('', {
       start: current.offset,
-      end: current.offset + 1,
+      end: current.offset + (current.length ?? 1),
       draftRev: snapshot.draftRev,
     })
     if (!accepted) return

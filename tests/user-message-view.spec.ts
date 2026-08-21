@@ -180,3 +180,94 @@ describe('UserMessageNodeShadow', () => {
     expect(screen.getByRole('dialog')).not.toBeNull()
   })
 })
+
+/**
+ * rc8 moved historical image presentation into the `conversation.message.images`
+ * slot: chat-node renderers receive a `renderMessageImages` callback and NO
+ * `loadImage`. The shadow must delegate native blocks there instead of
+ * degrading them to a bare filename.
+ */
+describe('UserMessageNodeShadow on a host that owns message images', () => {
+  afterEach(() => { document.body.replaceChildren() })
+
+  const hostT = (key: string): string => key
+
+  const renderWithHostGallery = (content: unknown[]) => {
+    const renderMessageImages = vi.fn((owner: { images: ReadonlyArray<{ attachment: NativeAttachmentView }>; align: string }) =>
+      createElement('div', { 'data-host-gallery': owner.align }, `host:${owner.images.length}`))
+    const props = { node: { data: { content, time: 1 } }, renderMessageImages, t: hostT }
+    return { renderMessageImages, ...render(createElement(UserMessageNodeShadow, props as never)) }
+  }
+
+  it('delegates native image blocks to the host entry instead of printing the filename', () => {
+    const { container, renderMessageImages } = renderWithHostGallery([
+      text('看这张图'),
+      imageBlock({ attachmentId: 'sha256:a', mediaType: 'image/png', name: 'shot.png', width: 800, height: 600 }),
+    ])
+
+    expect(renderMessageImages).toHaveBeenCalledTimes(1)
+    expect(renderMessageImages.mock.calls[0]?.[0]).toMatchObject({ align: 'end' })
+    expect(renderMessageImages.mock.calls[0]?.[0].images).toEqual([
+      { attachment: { attachmentId: 'sha256:a', mediaType: 'image/png', name: 'shot.png', width: 800, height: 600 } },
+    ])
+    expect(container.querySelector('[data-host-gallery="end"]')).not.toBeNull()
+    // The name-only degradation is exactly the reported multimodal symptom.
+    expect(container.querySelector('.dvt-img-text')).toBeNull()
+    expect(container.textContent).not.toContain('shot.png')
+    expect(container.textContent).toContain('看这张图')
+  })
+
+  it('passes every native attachment of a multi-image message in order', () => {
+    const { renderMessageImages } = renderWithHostGallery([
+      imageBlock({ attachmentId: 'sha256:a', mediaType: 'image/png', name: 'a.png' }),
+      imageBlock({ attachmentId: 'sha256:b', mediaType: 'image/webp', name: 'b.webp' }),
+    ])
+
+    expect(renderMessageImages).toHaveBeenCalledTimes(1)
+    expect(renderMessageImages.mock.calls[0]?.[0].images.map(row => row.attachment.name)).toEqual(['a.png', 'b.webp'])
+  })
+
+  it('still renders bridged images locally and strips the model-facing markup', () => {
+    const { container, renderMessageImages } = renderWithHostGallery([
+      text(`${BRIDGE_PATH}
+
+![pic](<${BRIDGE_URL}>)
+
+这张图是什么？`),
+    ])
+
+    // A bridge tile needs no resolver: it loads from the session file route.
+    expect(renderMessageImages).not.toHaveBeenCalled()
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(BRIDGE_URL)
+    expect(container.textContent).not.toContain('Pasted image available at absolute path')
+    expect(container.textContent).not.toContain('/_dsh/vision-cloud/paste-images/file')
+    expect(container.textContent).toContain('这张图是什么？')
+  })
+
+  it('renders host-owned native blocks and bridged tiles side by side', () => {
+    const { container, renderMessageImages } = renderWithHostGallery([
+      text(`${BRIDGE_PATH}
+
+![pic](<${BRIDGE_URL}>)
+
+混合消息`),
+      imageBlock({ attachmentId: 'sha256:a', mediaType: 'image/png', name: 'native.png' }),
+    ])
+
+    expect(renderMessageImages).toHaveBeenCalledTimes(1)
+    expect(renderMessageImages.mock.calls[0]?.[0].images.map(row => row.attachment.name)).toEqual(['native.png'])
+    expect(container.querySelector('[data-host-gallery="end"]')).not.toBeNull()
+    expect([...container.querySelectorAll('img')].map(img => img.getAttribute('src'))).toEqual([BRIDGE_URL])
+    expect(container.textContent).not.toContain('native.png')
+    expect(container.textContent).toContain('混合消息')
+  })
+
+  it('keeps the filename fallback when the host offers neither a loader nor a gallery entry', () => {
+    const props = {
+      node: { data: { content: [imageBlock({ attachmentId: 'sha256:a', mediaType: 'image/png', name: 'only.png' })], time: 1 } },
+      t: hostT,
+    }
+    const { container } = render(createElement(UserMessageNodeShadow, props as never))
+    expect(container.querySelector('.dvt-img-text')?.textContent).toBe('only.png')
+  })
+})

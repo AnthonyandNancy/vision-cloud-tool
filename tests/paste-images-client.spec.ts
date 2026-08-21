@@ -18,8 +18,13 @@ interface Occurrence {
   offset: number
   label: string
   clipboardText: string
+  length?: number
 }
 
+/**
+ * The dependency-floor composer: `insertReference` mints ONE placeholder glyph
+ * and the occurrence range is implicitly a single character.
+ */
 function inputMachine(initial = '') {
   let state = {
     draft: initial,
@@ -81,12 +86,93 @@ removeImage: vi.fn((id: string) => {
   }
 }
 
+/**
+ * The rc8 composer contract: `insertReference` writes the full inline display
+ * text `@<label>` (plus its own separating gap), records the display span as
+ * the occurrence `length`, and — critically — DROPS any occurrence whose range
+ * an edit intersects. A caller that advances its cursor by a hardcoded 1 would
+ * therefore write its separator inside the reference and silently destroy the
+ * occurrence, losing both the chip and the submit-time serialization.
+ */
+function rc8InputMachine(initial = '') {
+  let draft = initial
+  let draftRev = 0
+  let seq = 0
+  let occurrences: Occurrence[] = []
+  let imageIds: string[] = []
+  const listeners = new Set<() => void>()
+  const publish = (): void => { for (const listener of [...listeners]) listener() }
+  const reconcile = (start: number, end: number, insertedLength: number): void => {
+    const delta = insertedLength - (end - start)
+    const kept: Occurrence[] = []
+    for (const row of occurrences) {
+      const length = row.length ?? 1
+      if (row.offset + length <= start) kept.push(row)
+      else if (row.offset >= end) kept.push(delta === 0 ? row : { ...row, offset: row.offset + delta })
+      // Intersecting ranges are deliberately dropped, exactly like rc8.
+    }
+    occurrences = kept
+  }
+  return {
+    state: {
+      getSnapshot: () => ({ draft, draftRev, phase: 'plain' as const, imageIds, occurrences, queue: [] }),
+      subscribe: (listener: () => void) => {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+    },
+    setDraft: vi.fn((next: string) => {
+      // rc8 derives the edit range by diffing, then reconciles.
+      let prefix = 0
+      while (prefix < draft.length && prefix < next.length && draft[prefix] === next[prefix]) prefix += 1
+      let suffix = 0
+      while (suffix < draft.length - prefix && suffix < next.length - prefix
+        && draft[draft.length - 1 - suffix] === next[next.length - 1 - suffix]) suffix += 1
+      reconcile(prefix, draft.length - suffix, next.length - prefix - suffix)
+      draft = next
+      draftRev += 1
+      publish()
+    }),
+    insertReference: vi.fn((reference: Omit<Occurrence, 'occurrenceId' | 'offset' | 'length'>, span: { start: number; end: number; draftRev: number }) => {
+      if (span.draftRev !== draftRev || span.start > span.end) return false
+      const tail = draft.slice(span.end)
+      const gap = tail.length === 0 || tail[0] !== ' ' ? ' ' : ''
+      const displayText = `@${reference.label}`
+      reconcile(span.start, span.end, (displayText + gap).length)
+      seq += 1
+      occurrences = [...occurrences, { ...reference, occurrenceId: seq, offset: span.start, length: displayText.length }]
+        .sort((a, b) => a.offset - b.offset)
+      draft = draft.slice(0, span.start) + displayText + gap + tail
+      draftRev += 1
+      publish()
+      return true
+    }),
+    insertText: vi.fn((text: string, span: { start: number; end: number; draftRev: number }) => {
+      if (span.draftRev !== draftRev || span.start > span.end) return false
+      reconcile(span.start, span.end, text.length)
+      draft = draft.slice(0, span.start) + text + draft.slice(span.end)
+      draftRev += 1
+      publish()
+      return true
+    }),
+    addImages: vi.fn((ids: string[]) => { imageIds = [...imageIds, ...ids]; publish(); return true }),
+    removeImage: vi.fn((id: string) => { imageIds = imageIds.filter(value => value !== id); publish() }),
+    notify: vi.fn(),
+  }
+}
+
 type TriggerService = 'slash' | 'inputTriggers'
 
 const benches: Array<() => void> = []
 
-function fakeClient(initial = '', triggerServices: readonly TriggerService[] = ['slash'], aliasTriggers = false, extras: Record<string, unknown> = {}) {
-  const input = inputMachine(initial)
+function fakeClient(
+  initial = '',
+  triggerServices: readonly TriggerService[] = ['slash'],
+  aliasTriggers = false,
+  extras: Record<string, unknown> = {},
+  makeInput: (draft: string) => ReturnType<typeof inputMachine> = inputMachine,
+) {
+  const input = makeInput(initial)
   const effects: Array<() => void> = []
   const registrations: Array<{
     options: Record<string, unknown>
@@ -1778,5 +1864,134 @@ it('reconciles native draft images into bridge refs after switching to a text-on
       delete (URL as { createObjectURL?: unknown; revokeObjectURL?: unknown }).createObjectURL
       delete (URL as { createObjectURL?: unknown; revokeObjectURL?: unknown }).revokeObjectURL
     }
+  })
+})
+
+describe('rc8 inline-reference contract', () => {
+  /** The composer draft-image API, so bridged records also get a native preview. */
+  function draftFace() {
+    return {
+      createDraftImages: vi.fn((files: readonly File[]) => files.map((value, index) => ({
+        id: `preview-${index}`,
+        file: value,
+        previewUrl: `blob:preview-${index}`,
+      }))),
+      draftImages: vi.fn(() => []),
+      releaseDraftImages: vi.fn(),
+      releaseDraftImage: vi.fn(),
+    }
+  }
+
+  it('keeps one live occurrence per image when the host mints `@label` display text', async () => {
+    const bench = fakeClient('', ['slash'], false, {}, rc8InputMachine)
+    const textarea = composer()
+    await armTakeover()
+
+    textarea.dispatchEvent(clipboardEvent('', [
+      file('one.png', 'image/png', [1]),
+      file('two.png', 'image/png', [2]),
+    ]))
+    await flushTasks()
+
+    const snapshot = bench.input.state.getSnapshot()
+    // The separator must land AFTER the reference range, so both occurrences survive.
+    expect(snapshot.occurrences).toHaveLength(2)
+    expect(snapshot.occurrences.map(row => row.label)).toEqual(['one.png', 'two.png'])
+    // Each occurrence must still cover its own `@label` text in the draft.
+    for (const row of snapshot.occurrences) {
+      expect(snapshot.draft.slice(row.offset, row.offset + (row.length ?? 1))).toBe(`@${row.label}`)
+    }
+    // No duplicated trigger glyphs and no interleaved labels from bad cursor math.
+    expect(snapshot.draft).not.toMatch(/@\s*@/u)
+    expect(snapshot.draft.trim()).toBe('@one.png @two.png')
+    bench.dispose()
+  })
+
+  it('still serializes the bridge path text for every rc8 occurrence', async () => {
+    const bench = fakeClient('', ['slash'], false, {}, rc8InputMachine)
+    const textarea = composer()
+    const request = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method !== 'POST') {
+        return new Response(JSON.stringify({ takeover: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }
+      const index = request.mock.calls.filter(([, call]) => (call as RequestInit | undefined)?.method === 'POST').length - 1
+      return new Response(JSON.stringify({
+        ok: true,
+        value: { absolutePath: `/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-0${index + 1}.png` },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', request)
+    await armTakeover()
+
+    textarea.dispatchEvent(clipboardEvent('look ', [
+      file('one.png', 'image/png', [1]),
+      file('two.png', 'image/png', [2]),
+    ]))
+    await flushTasks()
+
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('paste source was not registered')
+    const refs = bench.input.state.getSnapshot().occurrences.map(row => row.ref)
+    expect(refs).toHaveLength(2)
+    const serialized = await Promise.all(refs.map(ref => codec.serialize(ref, new AbortController().signal)))
+    // Without a live occurrence the host would never call the codec at all, and
+    // a text-only model would receive the literal `@one.png` instead of a path.
+    for (const text of serialized) {
+      expect(text).toContain('[Pasted image available at absolute path: "/workspace/.dsh-vision-cloud/tmp/pasted-images/a/image-0')
+      expect(text).toContain('/_dsh/vision-cloud/paste-images/file?sessionId=session-1&name=image-0')
+    }
+    bench.dispose()
+  })
+
+  it('survives the user typing after the paste, keeping occurrences and previews paired', async () => {
+    const face = draftFace()
+    const bench = fakeClient('', ['slash'], false, { conversation: face }, rc8InputMachine)
+    const textarea = composer()
+    await armTakeover()
+
+    textarea.dispatchEvent(clipboardEvent('', [file('one.png', 'image/png', [1])]))
+    await flushTasks()
+    expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
+    expect(bench.input.state.getSnapshot().imageIds).toEqual(['preview-0'])
+
+    // Typing at the very end of the draft must not disturb the reference range;
+    // an orphaned occurrence here is what previously released the thumbnail.
+    const before = bench.input.state.getSnapshot().draft
+    bench.input.setDraft(`${before}hello`)
+    await flushTasks()
+
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.occurrences).toHaveLength(1)
+    expect(snapshot.imageIds).toEqual(['preview-0'])
+    expect(snapshot.draft).toContain('hello')
+    expect(face.releaseDraftImage).not.toHaveBeenCalled()
+    bench.dispose()
+  })
+
+  it('removes the whole `@label` span when a bridged image is dismissed', async () => {
+    const bench = fakeClient('', ['slash'], false, {}, rc8InputMachine)
+    const textarea = composer()
+    await armTakeover()
+
+    textarea.dispatchEvent(clipboardEvent('keep ', [file('one.png', 'image/png', [1])]))
+    await flushTasks()
+    const occurrence = bench.input.state.getSnapshot().occurrences[0]
+    if (occurrence === undefined) throw new Error('expected one bridged occurrence')
+
+    const dock = bench.registrations.find(row => row.options.id === 'vision-cloud-pasted-images')
+    if (dock === undefined) throw new Error('paste dock was not registered')
+    const injected = (dock.options.inject as ((sessionId: string) => {
+      controller: PasteImageController
+      remove: (row: Occurrence) => void
+    }))('session-1')
+    injected.remove(occurrence as Occurrence)
+
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.occurrences).toHaveLength(0)
+    // A length-1 deletion would leave the label text stranded in the draft.
+    expect(snapshot.draft).not.toContain('one.png')
+    expect(snapshot.draft).not.toContain('@')
+    expect(snapshot.draft).toContain('keep')
+    bench.dispose()
   })
 })

@@ -41,7 +41,7 @@ export interface SplitContent {
     text: string;
     /** Native `type:'image'` blocks. */
     images: NativeAttachmentView[];
-    /** Blocks that are neither text nor images (rendered as JsonBlock). */
+    /** Known structured blocks that the shadow renderer can safely expose. */
     rest: unknown[];
 }
 export interface ImageFit {
@@ -74,10 +74,22 @@ export declare function ImageLightbox(props: {
     onClose: () => void;
 }): ReactNode;
 /**
+ * The host's historical message-image entry (`conversation.message.images`).
+ * Newer DSH builds own native image presentation in that slot and hand chat
+ * node renderers this callback instead of a `loadImage` resolver.
+ */
+export type RenderMessageImages = (owner: {
+    images: ReadonlyArray<{
+        attachment: NativeAttachmentView;
+    }>;
+    align: 'start' | 'end';
+}) => ReactNode;
+/**
  * Priority -1 shadow of the product's keyed `user` / `steering` chat-node
- * views. Props are the framework's composed slot props (node, loadImage, t,
- * session kit). A render error here abdicates the entry, handily restoring
- * the product view instead of leaving an empty row.
+ * views. Props are the framework's composed slot props (node, the image
+ * presentation currency — `loadImage` on older builds, `renderMessageImages`
+ * on newer ones — t, session kit). A render error here abdicates the entry,
+ * handily restoring the product view instead of leaving an empty row.
  */
 export declare const UserMessageNodeShadow: import("react").MemoExoticComponent<(props: ChatNodeViewProps) => ReactNode>;
 /**

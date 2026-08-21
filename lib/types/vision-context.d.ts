@@ -28,6 +28,8 @@ export declare const EMPTY_VISION_IMAGE_INPUTS: VisionImageInputs;
 export declare const PASTE_PATH_MARKER_PATTERN: RegExp;
 /** Direct image URL shapes accepted by vision_cloud_tool. */
 export declare const IMAGE_URL_PATTERN: RegExp;
+/** Explicit DSH image-file references, with quoted names allowed to contain spaces. */
+export declare const DSH_IMAGE_FILE_REFERENCE_PATTERN: RegExp;
 /** How the current conversation model can consume image inputs. */
 export type ConversationVisionCapability = 'image' | 'text' | 'unknown';
 /**

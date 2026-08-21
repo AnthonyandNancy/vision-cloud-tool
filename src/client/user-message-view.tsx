@@ -297,14 +297,55 @@ type GalleryItem =
   | { kind: 'native'; attachment: NativeAttachmentView; name: string }
   | { kind: 'bridge'; item: PastedBridgeImage; name: string }
 
+/**
+ * The host's historical message-image entry (`conversation.message.images`).
+ * Newer DSH builds own native image presentation in that slot and hand chat
+ * node renderers this callback instead of a `loadImage` resolver.
+ */
+export type RenderMessageImages = (owner: {
+  images: ReadonlyArray<{ attachment: NativeAttachmentView }>
+  align: 'start' | 'end'
+}) => ReactNode
+
+function isNative(item: GalleryItem): item is Extract<GalleryItem, { kind: 'native' }> {
+  return item.kind === 'native'
+}
+
+function isBridge(item: GalleryItem): item is Extract<GalleryItem, { kind: 'bridge' }> {
+  return item.kind === 'bridge'
+}
+
 function ShadowGallery(props: {
   items: readonly GalleryItem[]
   load: ((attachment: NativeAttachmentView) => Promise<string>) | undefined
+  renderNative: RenderMessageImages | undefined
   t: ShadowTranslate | undefined
 }): ReactNode {
   if (props.items.length === 0) return null
-  const variant = props.items.length === 1 ? 'single' : 'tile'
   const labels = resolveLabels(props.t)
+
+  // No image resolver, but the host offers its own message-image entry: hand
+  // the native blocks back to it so multimodal bubbles keep real thumbnails
+  // instead of degrading to a bare filename. Bridge tiles stay local — they
+  // render straight from the session-authorized file route, no loader needed.
+  const natives = props.items.filter(isNative)
+  if (props.load === undefined && props.renderNative !== undefined && natives.length > 0) {
+    const bridges = props.items.filter(isBridge)
+    return <>
+      {props.renderNative({ images: natives.map(item => ({ attachment: item.attachment })), align: 'end' })}
+      {bridges.length > 0 && <div className="dvt-img-gallery" data-align="end">
+        {bridges.map((item, index) => <BridgeImageCell
+          key={`bridge-${item.item.url}-${index}`}
+          item={item.item}
+          name={item.name}
+          variant={bridges.length === 1 ? 'single' : 'tile'}
+          labels={labels}
+        />)}
+      </div>}
+    </>
+  }
+
+  const variant = props.items.length === 1 ? 'single' : 'tile'
   return <div className="dvt-img-gallery" data-align="end">
     {props.items.map((item, index) => {
       if (item.kind === 'native') {
@@ -380,12 +421,14 @@ type ShadowNodeData = {
 
 /**
  * Priority -1 shadow of the product's keyed `user` / `steering` chat-node
- * views. Props are the framework's composed slot props (node, loadImage, t,
- * session kit). A render error here abdicates the entry, handily restoring
- * the product view instead of leaving an empty row.
+ * views. Props are the framework's composed slot props (node, the image
+ * presentation currency — `loadImage` on older builds, `renderMessageImages`
+ * on newer ones — t, session kit). A render error here abdicates the entry,
+ * handily restoring the product view instead of leaving an empty row.
  */
 export const UserMessageNodeShadow = memo(function UserMessageNodeShadow(props: ChatNodeViewProps): ReactNode {
   const { node, loadImage, t } = props
+  const renderNative = (props as { renderMessageImages?: RenderMessageImages }).renderMessageImages
   const data = (node?.data ?? {}) as ShadowNodeData
   const content = Array.isArray(data.content) ? data.content : []
   const split = useMemo(() => splitContent(content), [content])
@@ -397,7 +440,12 @@ export const UserMessageNodeShadow = memo(function UserMessageNodeShadow(props: 
   const showBubble = bridge.text !== '' || split.rest.length > 0
   return <div className="dvt-user-row" data-pending-steering={data.pending === true ? 'true' : undefined} data-time-hover-root>
     <div className="dvt-user-stack">
-      <ShadowGallery items={items} load={loadImage as unknown as ((attachment: NativeAttachmentView) => Promise<string>) | undefined} t={t as unknown as ShadowTranslate | undefined} />
+      <ShadowGallery
+        items={items}
+        load={loadImage as unknown as ((attachment: NativeAttachmentView) => Promise<string>) | undefined}
+        renderNative={renderNative}
+        t={t as unknown as ShadowTranslate | undefined}
+      />
       {showBubble && <div className="dvt-bubble">
         {projectUserText(bridge.text)}
         {split.rest.map((block, index) => <JsonBlock
@@ -426,8 +474,23 @@ function FallbackUserMessage(props: ChatNodeViewProps): ReactNode {
     ...split.images.map((attachment, index) => ({ kind: 'native' as const, attachment, name: attachment.name ?? `image-${index + 1}` })),
     ...bridge.images.map((item, index) => ({ kind: 'bridge' as const, item, name: item.alt || `pasted-image-${index + 1}` })),
   ]
+  // Delegate native blocks to the host's message-image entry when it exists so
+  // even the error path shows thumbnails. This renderer must never throw — the
+  // boundary above has already spent its retry — so a failing delegation
+  // degrades to the filename below rather than escaping.
+  const renderNative = (props as { renderMessageImages?: RenderMessageImages }).renderMessageImages
+  const natives = items.filter(isNative)
+  let hostGallery: ReactNode = null
+  if (props.loadImage === undefined && renderNative !== undefined && natives.length > 0) {
+    try {
+      hostGallery = renderNative({ images: natives.map(item => ({ attachment: item.attachment })), align: 'end' })
+    } catch {
+      hostGallery = null
+    }
+  }
   return <div className="dvt-user-row" data-time-hover-root>
     <div className="dvt-user-stack">
+      {hostGallery}
       {items.map((item, index) => {
         if (item.kind === 'bridge') {
           return <img
@@ -438,6 +501,7 @@ function FallbackUserMessage(props: ChatNodeViewProps): ReactNode {
             style={{ maxWidth: 240, borderRadius: 14 }}
           />
         }
+        if (hostGallery !== null) return null
         return <span key={`native-${index}`} className="dvt-img-text">{item.name}</span>
       })}
       {bridge.text !== '' && <div className="dvt-bubble">{bridge.text}</div>}

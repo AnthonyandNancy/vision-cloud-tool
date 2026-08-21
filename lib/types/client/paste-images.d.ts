@@ -25,6 +25,12 @@ interface PasteOccurrence {
     source: string;
     ref: string;
     offset: number;
+    /**
+     * Inline display span of the reference. Older builds mint a single
+     * placeholder glyph; rc8 mints the full `@label` display text and reports
+     * its length here.
+     */
+    length?: number | undefined;
     label: string;
 }
 type PasteDockProps = PropsRuntime<'conversation.input.dock'> & {
