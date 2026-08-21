@@ -1288,6 +1288,23 @@ describe('clipboard image client', () => {
     expect(params.get('model')).toContain('DeepSeek-V4-Flash')
     bench.dispose()
   })
+
+  it('keeps the rc6 bridge path alive when newer selection and draft-image surfaces are absent', async () => {
+    const bench = fakeClient('', ['slash'])
+    composer()
+    await armTakeover()
+    const textarea = document.querySelector<HTMLTextAreaElement>('[data-composer-card] textarea')
+    if (textarea === null) throw new Error('composer textarea missing')
+    textarea.dispatchEvent(clipboardEvent('', [file('rc6.png', 'image/png', [1])]))
+    await flushTasks()
+
+    const occurrence = bench.input.state.getSnapshot().occurrences[0]
+    if (occurrence === undefined) throw new Error('bridge occurrence missing')
+    const codec = bench.source()?.codec
+    if (codec === undefined) throw new Error('legacy trigger source missing')
+    await expect(codec.serialize(occurrence.ref, new AbortController().signal)).resolves.toContain('rc6.png')
+    bench.dispose()
+  })
 it('reconciles native draft images into bridge refs after switching to a text-only model (issue 1)', async () => {
     let current: { provider: string; model: string } = { provider: 'abrdns', model: 'Qwen3.8-Max' }
     const listeners = new Set<() => void>()
@@ -1531,6 +1548,57 @@ it('reconciles native draft images into bridge refs after switching to a text-on
     expect(bench.input.state.getSnapshot().imageIds).toEqual([])
     expect(bench.input.state.getSnapshot().occurrences).toHaveLength(1)
     expect(bench.input.state.getSnapshot().draft).toContain('不要覆盖')
+    bench.dispose()
+  })
+
+  it('keeps the draft native when a stale text verdict lands after switching back to an image model', async () => {
+    let current: { provider: string; model: string } = { provider: 'p', model: 'image-model-a' }
+    const listeners = new Set<() => void>()
+    const directory = {
+      store: {
+        getSnapshot: () => ({ current }),
+        subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      },
+    }
+    const native = file('pingpong.png', 'image/png', [1, 2, 3])
+    const draftFace = {
+      draftImages: vi.fn(() => [{ id: 'native-pingpong', file: native, previewUrl: 'blob:native' }]),
+      releaseDraftImages: vi.fn(),
+    }
+    const textVerdict = deferred<Response>()
+    const fetchMock = vi.fn((url: unknown) => {
+      const model = new URL(String(url), 'http://localhost').searchParams.get('model')
+      if (model === 'text-model') return textVerdict.promise
+      return Promise.resolve(new Response(JSON.stringify({ takeover: false }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    })
+    const bench = fakeClient('来回切换', ['slash'], false, {
+      modelDirectories: { directoryFor: vi.fn(() => directory) },
+      conversation: draftFace,
+    })
+    composer()
+    vi.stubGlobal('fetch', fetchMock)
+    await armTakeover()
+    bench.input.addImages(['native-pingpong'])
+
+    // image → text with the capability query still pending, then back to
+    // image before that stale text verdict can land.
+    current = { provider: 'p', model: 'text-model' }
+    for (const listener of listeners) listener()
+    current = { provider: 'p', model: 'image-model-b' }
+    for (const listener of listeners) listener()
+
+    textVerdict.resolve(new Response(JSON.stringify({ takeover: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    await flushTasks()
+
+    const snapshot = bench.input.state.getSnapshot()
+    expect(snapshot.imageIds).toEqual(['native-pingpong'])
+    expect(snapshot.occurrences).toEqual([])
+    expect(snapshot.draft).toBe('来回切换')
+    expect(snapshot.draft).not.toContain('[pasted image:')
+    expect(snapshot.draft).not.toContain('/_dsh/')
     bench.dispose()
   })
 

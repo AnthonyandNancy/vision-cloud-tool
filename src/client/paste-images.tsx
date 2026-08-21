@@ -58,6 +58,12 @@ interface VerdictEntry {
   task?: Promise<boolean | undefined> | undefined
 }
 
+interface ReconcileState {
+  generation: number
+  dirty: boolean
+  running: boolean
+}
+
 interface ModelDirectoryStore {
   getSnapshot(): { current?: { provider?: string; model?: string } | null }
   subscribe(listener: () => void): () => void
@@ -287,6 +293,14 @@ export class PasteImageController {
 
   constructor(private readonly ctx: ClientContext) {}
 
+  /** Release per-session subscriptions and reconciliation state owned by this controller. */
+  dispose(): void {
+    for (const unsubscribe of this.directoryUnsubscribes.values()) unsubscribe()
+    this.directoryUnsubscribes.clear()
+    this.subscribedDirectories.clear()
+    this.reconciliationStates.clear()
+  }
+
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
@@ -307,7 +321,8 @@ export class PasteImageController {
   private replaying = false
   private lastBridgeNoticeAt = 0
   private readonly subscribedDirectories = new Set<string>()
-  private readonly reconciliations = new Map<string, Promise<void>>()
+  private readonly directoryUnsubscribes = new Map<string, () => void>()
+  private readonly reconciliationStates = new Map<string, ReconcileState>()
 
   /** Best-effort current model selector label (used only without modelDirectories). */
   private currentModelLabel(): string {
@@ -359,11 +374,12 @@ export class PasteImageController {
     this.subscribedDirectories.add(sessionId)
     if (typeof store.subscribe !== 'function') return
     try {
-      store.subscribe(() => {
+      const unsubscribe = store.subscribe(() => {
         this.flushVerdicts(sessionId)
         this.prefetch()
-        void this.reconcileDraftMedia(sessionId)
+        this.requestDraftReconciliation(sessionId)
       })
+      if (typeof unsubscribe === 'function') this.directoryUnsubscribes.set(sessionId, unsubscribe)
     } catch {
       // Keep the DOM label fallback when the store rejects listeners.
     }
@@ -390,7 +406,7 @@ export class PasteImageController {
    */
   private refreshVerdict(sessionId: string, pick: ModelPick): Promise<boolean | undefined> {
     const key = this.verdictKey(sessionId, pick)
-    if (key === undefined) return Promise.resolve(false)
+    if (key === undefined) return Promise.resolve(undefined)
     if (!this.routeAvailable && Date.now() < this.routeRetryAt) return Promise.resolve(undefined)
     const cached = this.verdicts.get(key)
     if (cached?.pending && cached.task !== undefined) return cached.task
@@ -462,51 +478,99 @@ export class PasteImageController {
   }
 
   /**
-   * One-way draft reconciliation: when the selected model becomes text-only
-   * and the draft still carries native image ids from a multimodal paste,
-   * convert those images to bridge references before the host rejects the
-   * next send. No destructive fallback: if the verdict is unknown the draft
-   * stays exactly as the user left it.
+   * Latest-wins draft reconciliation. Every selection event marks the session
+   * dirty and the runner retries against the newest selection after any in
+   * flight reconciliation finishes; an old capability response never mutates a
+   * newer model state.
    */
-  private reconcileDraftMedia(sessionId: string): Promise<void> {
-    const previous = this.reconciliations.get(sessionId)
-    if (previous !== undefined) return previous
-    const task = (async () => {
-      try {
-        const pick = this.currentPick(sessionId)
-        const key = this.verdictKey(sessionId, pick)
-        if (key === undefined) return
+  private requestDraftReconciliation(sessionId: string): void {
+    const state = this.reconciliationStates.get(sessionId) ?? { generation: 0, dirty: false, running: false }
+    state.generation += 1
+    state.dirty = true
+    this.reconciliationStates.set(sessionId, state)
+    if (state.running) return
+    state.running = true
+    void this.runDraftReconciliation(sessionId, state)
+  }
 
-        let input: ReturnType<PasteImageController['inputFor']>
-        try {
-          input = this.inputFor(sessionId)
-        } catch {
-          return // Subagent/no composer scope has no draft rail to reconcile.
-        }
-
-        const before = input.state.getSnapshot()
-        if (before.phase !== 'plain' || before.imageIds.length === 0) return
-
-        const verdict = await this.refreshVerdict(sessionId, pick)
-        if (verdict === undefined) {
-          input.notify('error', 'The image bridge is temporarily unreachable; native draft images were left unchanged.')
-          return
-        }
-        if (verdict !== true) return
-        // The selection may have changed again while the GET was in flight.
-        if (this.verdictKey(sessionId, this.currentPick(sessionId)) !== key) return
-
-        const snapshot = input.state.getSnapshot()
-        if (snapshot.phase !== 'plain' || snapshot.imageIds.length === 0) return
-        await this.bridgeNativeDraft(sessionId, input, snapshot.imageIds)
-      } catch (error) {
-        console.warn('dsh-vision-cloud could not reconcile draft images with the selected model', error)
-      } finally {
-        this.reconciliations.delete(sessionId)
+  private async runDraftReconciliation(sessionId: string, state: ReconcileState): Promise<void> {
+    try {
+      while (state.dirty) {
+        state.dirty = false
+        const generation = state.generation
+        await this.reconcileCurrentDraft(sessionId, generation)
+        if (state.generation !== generation) state.dirty = true
       }
-    })()
-    this.reconciliations.set(sessionId, task)
-    return task
+    } catch (error) {
+      console.warn('dsh-vision-cloud could not reconcile draft images with the selected model', error)
+    } finally {
+      state.running = false
+      if (state.dirty) this.requestDraftReconciliation(sessionId)
+    }
+  }
+
+  /**
+   * Bidirectional draft reconciliation against the latest selection:
+   * a confirmed image-capable model promotes held-File bridge records to
+   * real native attachments; a text-only or unknown verdict demotes native
+   * ids to text-safe bridge references before the host can reject the next
+   * send. Every migration is non-destructive — the target representation is
+   * admitted first and the source removed only after the selection and draft
+   * still match.
+   */
+  private async reconcileCurrentDraft(sessionId: string, _generation: number): Promise<void> {
+    const pick = this.currentPick(sessionId)
+    const key = this.verdictKey(sessionId, pick)
+
+    let input: ReturnType<PasteImageController['inputFor']>
+    try {
+      input = this.inputFor(sessionId)
+    } catch {
+      return // Subagent/no composer scope has no draft rail to reconcile.
+    }
+
+    const snapshot = input.state.getSnapshot()
+    if (snapshot.phase !== 'plain') return
+    const previewIds = this.previewIdsForSession(sessionId)
+    const nativeIds = (snapshot.imageIds as unknown as readonly string[])
+      .filter(id => !previewIds.has(id))
+    const bridgeRecords = this.recordsFor(occurrencesOf(snapshot))
+      .filter(record => record.batch.sessionId === sessionId)
+    if (nativeIds.length === 0 && bridgeRecords.length === 0) return
+
+    if (key === undefined) {
+      if (nativeIds.length > 0) await this.bridgeNativeDraft(sessionId, input, nativeIds)
+      return
+    }
+
+    const verdict = await this.refreshVerdict(sessionId, pick)
+    if (!this.selectionStillCurrent(sessionId, key, input)) return
+
+    if (verdict === false) {
+      if (bridgeRecords.length > 0) await this.promoteBridgeDraftToNative(sessionId, input, key)
+      return
+    }
+    if (nativeIds.length > 0) {
+      const migrated = await this.bridgeNativeDraft(sessionId, input, nativeIds, true, key)
+      if (migrated && verdict === undefined) this.notifyBridgeDown(input)
+    }
+  }
+
+  private selectionStillCurrent(
+    sessionId: string,
+    expectedSelectionKey: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+  ): boolean {
+    if (input.state.getSnapshot().phase !== 'plain') return false
+    return this.verdictKey(sessionId, this.currentPick(sessionId)) === expectedSelectionKey
+  }
+
+  private previewIdsForSession(sessionId: string): Set<string> {
+    const ids = new Set<string>()
+    for (const [id, preview] of this.nativePreviews) {
+      if (preview.sessionId === sessionId) ids.add(id)
+    }
+    return ids
   }
 
   private conversationDraftService(): ConversationDraftFace | undefined {
@@ -530,6 +594,7 @@ export class PasteImageController {
     input: ReturnType<PasteImageController['inputFor']>,
     imageIds: readonly string[],
     admitPreviews = true,
+    expectedSelectionKey?: string,
   ): Promise<boolean> {
     const face = this.conversationDraftService()
     const shell = input as unknown as { removeImage?: (id: string) => void }
@@ -540,10 +605,7 @@ export class PasteImageController {
 
     // Display-only previews created for bridge records must NOT be re-bridged:
     // they already have a live bridge occurrence in the draft.
-    const previewIds = new Set<string>()
-    for (const [id, preview] of this.nativePreviews) {
-      if (preview.sessionId === sessionId) previewIds.add(id)
-    }
+    const previewIds = this.previewIdsForSession(sessionId)
     const nativeImageIds = imageIds.filter(id => !previewIds.has(id))
     if (nativeImageIds.length === 0) return false
 
@@ -556,23 +618,217 @@ export class PasteImageController {
       this.cloneDraftFile(attachment.file, attachment.file.name || `clipboard-image-${index + 1}`))
     validateImages(files)
 
-    // Re-check immediately before the mutation: insert first so a failed CAS
-    // rollback leaves the original native ids untouched.
+    // Insert the bridge representation first, then confirm the latest
+    // selection/draft still matches before deleting the native source.
     let snapshot = input.state.getSnapshot()
     const cleanedDraft = stripBridgeMarkup(snapshot.draft)
     if (cleanedDraft !== snapshot.draft) {
       input.setDraft(cleanedDraft)
       snapshot = input.state.getSnapshot()
     }
-    if (!this.sameImageIds(snapshot.imageIds.filter(id => !previewIds.has(id)), nativeImageIds)) return false
+    if (!this.sameImageIds((snapshot.imageIds as unknown as readonly string[]).filter(id => !previewIds.has(id)), nativeImageIds)) return false
     const cursor = snapshot.draft.length
-    this.insertRecords(sessionId, input, files, cursor, admitPreviews)
+    const created: PasteRecord[] = []
+    this.insertRecords(sessionId, input, files, cursor, admitPreviews, created)
+
+    const afterInsert = input.state.getSnapshot()
+    const selectionValid = expectedSelectionKey === undefined || this.selectionStillCurrent(sessionId, expectedSelectionKey, input)
+    const imagesStillValid = this.sameImageIds(
+      (afterInsert.imageIds as unknown as readonly string[]).filter(id => !previewIds.has(id)),
+      nativeImageIds,
+    )
+    if (afterInsert.phase !== 'plain' || !selectionValid || !imagesStillValid) {
+      this.rollbackBridgeRecords(sessionId, input, created)
+      return false
+    }
 
     for (const id of nativeImageIds) shell.removeImage!(id)
     try { face.releaseDraftImages?.(attachments) } catch {
       // The migrated bridge records are independent File copies already.
     }
+    this.changed()
     return true
+  }
+
+  /**
+   * Bridge → native: admit the held File through the host draft-image API
+   * first, and only after the native id is live remove the bridge occurrence
+   * and its display-only preview. A failure at any step leaves the bridge
+   * representation intact.
+   */
+  private async promoteBridgeDraftToNative(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    expectedSelectionKey: string,
+  ): Promise<boolean> {
+    const snapshot = input.state.getSnapshot()
+    if (snapshot.phase !== 'plain') return false
+    const records = this.recordsFor(occurrencesOf(snapshot))
+      .filter(record => record.batch.sessionId === sessionId)
+    if (records.length === 0) return false
+
+    const seen = new Set<PasteRecord>()
+    const files: Array<{ ref: string; file: File }> = []
+    for (const record of records) {
+      if (seen.has(record)) continue
+      seen.add(record)
+      files.push({ ref: record.ref, file: record.file })
+    }
+
+    const admitted = await this.admitBridgeFilesAsNative(input, files)
+    if (admitted === undefined) return false
+    if (!this.selectionStillCurrent(sessionId, expectedSelectionKey, input)) {
+      this.removeAdmittedImages(input, admitted.ids, admitted.attachments)
+      return false
+    }
+
+    const refs = new Set(files.map(entry => entry.ref))
+    if (!this.removeBridgeOccurrences(input, refs)) {
+      this.removeAdmittedImages(input, admitted.ids, admitted.attachments)
+      return false
+    }
+    this.detachPromotedPreviews(sessionId, input, files.map(entry => entry.ref))
+    this.changed()
+    return true
+  }
+
+  private async admitBridgeFilesAsNative(
+    input: ReturnType<PasteImageController['inputFor']>,
+    files: readonly { ref: string; file: File }[],
+  ): Promise<{ ids: readonly string[]; attachments: readonly DraftMediaAttachment[] } | undefined> {
+    const face = this.conversationDraftService()
+    const shell = input as unknown as {
+      addImages?: (ids: readonly string[]) => boolean
+      removeImage?: (id: string) => void
+    }
+    if (typeof face?.createDraftImages === 'function' && typeof shell.addImages === 'function') {
+      let attachments: readonly DraftMediaAttachment[]
+      try {
+        attachments = face.createDraftImages(files.map(entry => entry.file))
+      } catch {
+        return undefined
+      }
+      if (attachments.length !== files.length) {
+        if (attachments.length > 0) face.releaseDraftImages?.(attachments)
+        return undefined
+      }
+      const ids = attachments.map(attachment => attachment.id)
+      if (!shell.addImages(ids)) {
+        face.releaseDraftImages?.(attachments)
+        return undefined
+      }
+      const currentIds = new Set(input.state.getSnapshot().imageIds as unknown as readonly string[])
+      if (!ids.every(id => currentIds.has(id))) {
+        for (const id of ids) shell.removeImage?.(id)
+        face.releaseDraftImages?.(attachments)
+        return undefined
+      }
+      return { ids, attachments }
+    }
+    return this.admitBridgeFilesByReplay(input, files)
+  }
+
+  /**
+   * Legacy promotion fallback: dispatch the same native paste path the
+   * controller uses elsewhere and only trust it when the draft's image id set
+   * actually grew by the expected number of files.
+   */
+  private async admitBridgeFilesByReplay(
+    input: ReturnType<PasteImageController['inputFor']>,
+    files: readonly { ref: string; file: File }[],
+  ): Promise<{ ids: readonly string[]; attachments: readonly DraftMediaAttachment[] } | undefined> {
+    const shell = input as unknown as { removeImage?: (id: string) => void }
+    const before = new Set(input.state.getSnapshot().imageIds as unknown as readonly string[])
+    const target = document.querySelector<HTMLTextAreaElement>('[data-composer-card] textarea')
+    if (!(target instanceof HTMLTextAreaElement)) return undefined
+    const snapshot = input.state.getSnapshot()
+    try {
+      this.releaseNatively(input, files.map(entry => entry.file), '', snapshot.draft.length, snapshot.draft.length, target, 'paste')
+    } catch {
+      return undefined
+    }
+    const after = input.state.getSnapshot().imageIds as unknown as readonly string[]
+    const added = after.filter(id => !before.has(id))
+    if (added.length !== files.length) {
+      for (const id of added) shell.removeImage?.(id)
+      return undefined
+    }
+    return { ids: added, attachments: [] }
+  }
+
+  private removeAdmittedImages(
+    input: ReturnType<PasteImageController['inputFor']>,
+    ids: readonly string[],
+    attachments: readonly DraftMediaAttachment[],
+  ): void {
+    const shell = input as unknown as { removeImage?: (id: string) => void }
+    const current = new Set(input.state.getSnapshot().imageIds as unknown as readonly string[])
+    for (const id of ids) {
+      if (current.has(id)) shell.removeImage?.(id)
+    }
+    if (attachments.length > 0) {
+      const face = this.conversationDraftService()
+      try { face?.releaseDraftImages?.(attachments) } catch {
+        // The host may already have released a partially admitted attachment.
+      }
+    }
+  }
+
+  private removeBridgeOccurrences(
+    input: ReturnType<PasteImageController['inputFor']>,
+    refs: ReadonlySet<string>,
+  ): boolean {
+    let snapshot = input.state.getSnapshot()
+    const targets = occurrencesOf(snapshot)
+      .filter(occurrence => occurrence.source === SOURCE && refs.has(occurrence.ref))
+      .sort((left, right) => right.offset - left.offset)
+    for (const occurrence of targets) {
+      // Consume ONE adjacent separator space — exactly the single gap
+      // insertExistingRefs adds — so a migrated image leaves no stray space
+      // in the draft. Prefer the preceding side; a reference inserted at the
+      // draft start carries its separator AFTER the occurrence instead.
+      const rawEnd = occurrence.offset + (occurrence.length ?? 1)
+      const before = snapshot.draft.slice(0, occurrence.offset)
+      let start = occurrence.offset
+      let end = rawEnd
+      if (before.endsWith(' ')) start -= 1
+      else if (snapshot.draft.slice(rawEnd, rawEnd + 1) === ' ') end += 1
+      const accepted = (input as typeof input & {
+        insertText: (text: string, span: { start: number; end: number; draftRev: number }) => boolean
+      }).insertText('', {
+        start,
+        end,
+        draftRev: snapshot.draftRev,
+      })
+      if (!accepted) return false
+      snapshot = input.state.getSnapshot()
+    }
+    return true
+  }
+
+  private detachPromotedPreviews(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    refs: readonly string[],
+  ): void {
+    const refSet = new Set(refs)
+    for (const [id, preview] of [...this.nativePreviews]) {
+      if (preview.sessionId !== sessionId || !refSet.has(preview.ref)) continue
+      this.detachNativePreview(id, input, this.conversationDraftService())
+    }
+  }
+
+  private rollbackBridgeRecords(
+    sessionId: string,
+    input: ReturnType<PasteImageController['inputFor']>,
+    records: readonly PasteRecord[],
+  ): void {
+    const refs = new Set(records.map(record => record.ref))
+    if (this.removeBridgeOccurrences(input, refs)) {
+      for (const record of records) this.records.delete(record.ref)
+    }
+    this.detachPromotedPreviews(sessionId, input, [...refs])
+    this.changed()
   }
 
   source(): InputTriggerSource {
@@ -693,11 +949,13 @@ export class PasteImageController {
     files: readonly File[],
     cursor: number,
     admitPreviews = true,
+    created?: PasteRecord[],
   ): number {
     const batch: PasteBatch = { sessionId, records: [] }
     for (const file of files) {
       const record: PasteRecord = { ref: id(), file, batch, status: 'ready' }
       batch.records.push(record)
+      created?.push(record)
       this.records.set(record.ref, record)
     }
     const next = this.insertExistingRefs(input, batch.records, batch.records, cursor)
@@ -823,11 +1081,12 @@ export class PasteImageController {
     original: (this: unknown, mode?: string) => void,
     mode: string | undefined,
     nativeIds: readonly string[],
+    expectedSelectionKey?: string,
   ): void {
     if (this.pendingSubmitGuards.has(input as object)) return
     this.pendingSubmitGuards.add(input as object)
     const release = (): void => this.releaseSubmit(sessionId, input, shell, original, mode)
-    void this.bridgeNativeDraft(sessionId, input, nativeIds, false).then(
+    void this.bridgeNativeDraft(sessionId, input, nativeIds, false, expectedSelectionKey).then(
       (ok: boolean) => {
         if (ok) release()
         else this.pendingSubmitGuards.delete(input as object)
@@ -857,25 +1116,23 @@ export class PasteImageController {
 
     const pick = this.currentPick(sessionId)
     const key = this.verdictKey(sessionId, pick)
-    if (key === undefined) { original.call(shell, mode); return }
 
-    const previewIds = new Set<string>()
-    for (const [id, preview] of this.nativePreviews) {
-      if (preview.sessionId === sessionId) previewIds.add(id)
-    }
+    const previewIds = this.previewIdsForSession(sessionId)
     const imageIds = snapshot.imageIds as unknown as readonly string[]
     const nativeIds = imageIds.filter(id => !previewIds.has(id))
     if (nativeIds.length === 0) { original.call(shell, mode); return }
 
-    const cached = this.verdicts.get(key)
+    const cached = key === undefined ? undefined : this.verdicts.get(key)
     if (cached !== undefined && !cached.pending && cached.takeover !== undefined
       && cached.at > 0 && Date.now() - cached.at <= this.VERDICT_MAX_AGE_MS) {
-      if (cached.takeover) this.submitBridged(sessionId, input, shell, original, mode, nativeIds)
+      if (cached.takeover) this.submitBridged(sessionId, input, shell, original, mode, nativeIds, key)
       else original.call(shell, mode)
       return
     }
 
-    // Unknown capability: don't leak the native block into prompt validation.
+    // Unknown or no-signal capability: never leak a native block into prompt
+    // validation. If the draft-image surface can migrate it to a text-safe
+    // bridge, submit after that succeeds.
     if (this.pendingSubmitGuards.has(input as object)) return
     this.pendingSubmitGuards.add(input as object)
     void (async () => {
@@ -888,10 +1145,10 @@ export class PasteImageController {
         const nowImageIds = now.imageIds as unknown as readonly string[]
         const nowNativeIds = nowImageIds.filter(id => !previewIds.has(id))
         if (nowNativeIds.length === 0) { this.releaseSubmit(sessionId, input, shell, original, mode); return }
-        if (verdict === undefined) { this.notifyBridgeDown(input); return }
-        if (verdict !== true) { this.releaseSubmit(sessionId, input, shell, original, mode); return }
-        const migrated = await this.bridgeNativeDraft(sessionId, input, nowNativeIds, false)
+        if (verdict === false) { this.releaseSubmit(sessionId, input, shell, original, mode); return }
+        const migrated = await this.bridgeNativeDraft(sessionId, input, nowNativeIds, false, key)
         if (!migrated) return
+        if (verdict === undefined) this.notifyBridgeDown(input)
         this.releaseSubmit(sessionId, input, shell, original, mode)
       } catch (error) {
         this.pendingSubmitGuards.delete(input as object)
@@ -1721,6 +1978,7 @@ export function installPasteImages(ctx: ClientContext): void {
       document.removeEventListener('drop', onDrop, true)
       document.removeEventListener('dragenter', onDragEnter, true)
       document.removeEventListener('focusin', onFocus, true)
+      controller.dispose()
     }
   }, 'dsh-vision-cloud: image capture')
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({

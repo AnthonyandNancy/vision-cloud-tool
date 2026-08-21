@@ -49,6 +49,8 @@ export declare class PasteImageController {
     private readonly submitGuards;
     private readonly pendingSubmitGuards;
     constructor(ctx: ClientContext);
+    /** Release per-session subscriptions and reconciliation state owned by this controller. */
+    dispose(): void;
     subscribe: (listener: () => void) => (() => void);
     snapshot: () => number;
     private changed;
@@ -60,7 +62,8 @@ export declare class PasteImageController {
     private replaying;
     private lastBridgeNoticeAt;
     private readonly subscribedDirectories;
-    private readonly reconciliations;
+    private readonly directoryUnsubscribes;
+    private readonly reconciliationStates;
     /** Best-effort current model selector label (used only without modelDirectories). */
     private currentModelLabel;
     private modelDirectoriesService;
@@ -90,18 +93,48 @@ export declare class PasteImageController {
     /** Prefetch the paste/drop takeover verdict (called on composer focus/drag enter). */
     prefetch(): void;
     /**
-     * One-way draft reconciliation: when the selected model becomes text-only
-     * and the draft still carries native image ids from a multimodal paste,
-     * convert those images to bridge references before the host rejects the
-     * next send. No destructive fallback: if the verdict is unknown the draft
-     * stays exactly as the user left it.
+     * Latest-wins draft reconciliation. Every selection event marks the session
+     * dirty and the runner retries against the newest selection after any in
+     * flight reconciliation finishes; an old capability response never mutates a
+     * newer model state.
      */
-    private reconcileDraftMedia;
+    private requestDraftReconciliation;
+    private runDraftReconciliation;
+    /**
+     * Bidirectional draft reconciliation against the latest selection:
+     * a confirmed image-capable model promotes held-File bridge records to
+     * real native attachments; a text-only or unknown verdict demotes native
+     * ids to text-safe bridge references before the host can reject the next
+     * send. Every migration is non-destructive — the target representation is
+     * admitted first and the source removed only after the selection and draft
+     * still match.
+     */
+    private reconcileCurrentDraft;
+    private selectionStillCurrent;
+    private previewIdsForSession;
     private conversationDraftService;
     /** Copy a draft File's bytes so they survive the host releasing the draft image. */
     private cloneDraftFile;
     private sameImageIds;
     private bridgeNativeDraft;
+    /**
+     * Bridge → native: admit the held File through the host draft-image API
+     * first, and only after the native id is live remove the bridge occurrence
+     * and its display-only preview. A failure at any step leaves the bridge
+     * representation intact.
+     */
+    private promoteBridgeDraftToNative;
+    private admitBridgeFilesAsNative;
+    /**
+     * Legacy promotion fallback: dispatch the same native paste path the
+     * controller uses elsewhere and only trust it when the draft's image id set
+     * actually grew by the expected number of files.
+     */
+    private admitBridgeFilesByReplay;
+    private removeAdmittedImages;
+    private removeBridgeOccurrences;
+    private detachPromotedPreviews;
+    private rollbackBridgeRecords;
     source(): InputTriggerSource;
     recordsFor(occurrences: readonly PasteOccurrence[]): PasteRecord[];
     private inputFor;

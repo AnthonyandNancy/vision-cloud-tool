@@ -9,6 +9,7 @@ feature-based: production code does not branch on the DSH release string.
 | `0.1.0-rc.7` | resolver failure plus `listModels(provider)` fallback | exact `id`/`name` catalog match; no partial label matches | `@file` normalization and `sha256:` attachments remain public APIs | automated |
 | `0.1.0-rc.8` | merge-extensible content block and structured session reference | unknown/malformed capabilities are conservative `unknown` | unknown blocks are not sent to `JsonBlock`; `@[...](dsh-session:...)` is never a file | automated |
 | `0.1.0-rc.8` | inline `@label` references and host-owned message images | unchanged | occurrence spans are read from the host; native history images are delegated to `conversation.message.images` | automated |
+| `0.1.0-rc.6`–`rc.8` | model-directory selection store, draft-image APIs, native-only assembly gate | provider + model from `modelDirectories.directoryFor(...).store` when present, DOM label only as legacy fallback | bridge occurrences with a held `File` promote to native only on a confirmed image-capable verdict; native draft ids demote to bridge immediately on a text/unknown selection, before submit; native-only image assembly removes the `vision_cloud_tool` schema, section, and context for that request; image + path/URL assemblies retain the tool for external inputs | automated |
 | later rc | same feature contracts, no version branch | capability detection continues to use method presence and returned shape | bridge and native routing remain invariant | contract coverage |
 
 ## Composer reference rules
