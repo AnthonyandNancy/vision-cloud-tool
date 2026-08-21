@@ -45,6 +45,14 @@ function hasNativeVisionTool(assembled: PromptAssembly): boolean {
   return assembled.tools.some(tool => tool.name === VISION_TOOL_NAME)
 }
 
+function removeVisionContributions(assembled: PromptAssembly): void {
+  assembled.tools = assembled.tools.filter(tool => tool.name !== VISION_TOOL_NAME)
+  const sectionIndex = assembled.sections.findIndex(section => section.name === VISION_TOOL_SECTION_NAME)
+  if (sectionIndex >= 0) assembled.sections.splice(sectionIndex, 1)
+  const contextIndex = assembled.contexts.findIndex(context => context.name === VISION_IMAGE_CONTEXT_NAME)
+  if (contextIndex >= 0) assembled.contexts.splice(contextIndex, 1)
+}
+
 function conversationModel(assembled: PromptAssembly): { provider: string; model: string } | undefined {
   const provider = assembled.variables.provider
   const model = assembled.variables.model
@@ -80,8 +88,7 @@ export async function applyVisionPromptEnrichment(
   context: AssembleContext,
 ): Promise<PromptAssembly> {
   if (!hasNativeVisionTool(assembled)) {
-    const sectionIndex = assembled.sections.findIndex(section => section.name === VISION_TOOL_SECTION_NAME)
-    if (sectionIndex >= 0) assembled.sections.splice(sectionIndex, 1)
+    removeVisionContributions(assembled)
     return assembled
   }
 
@@ -89,6 +96,15 @@ export async function applyVisionPromptEnrichment(
   const agent = (context as AssembleContext & { agent?: Agent | undefined }).agent
   const session = agent?.session
   const inputs = session === undefined ? structuredClone(EMPTY_VISION_IMAGE_INPUTS) : collectImageInputs(session)
+  if (
+    capability === 'image'
+    && inputs.attachments.length > 0
+    && inputs.paths.length === 0
+    && inputs.urls.length === 0
+  ) {
+    removeVisionContributions(assembled)
+    return assembled
+  }
   const routable = routeInputs(inputs, capability)
 
   const sectionIndex = assembled.sections.findIndex(section => section.name === VISION_TOOL_SECTION_NAME)
